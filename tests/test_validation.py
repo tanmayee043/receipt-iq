@@ -68,6 +68,42 @@ def test_without_printed_subtotal_items_are_the_base() -> None:
     assert codes(dinner(subtotal=None, total=D("20.00"))) == [IssueCode.TOTAL_MISMATCH]
 
 
+def test_line_discount_counts_against_subtotal() -> None:
+    items = [
+        LineItem(name="Latte", quantity=D(2), unit_price=D("4.50"), total_price=D("9.00")),
+        LineItem(name="Bagel", total_price=D("6.00"), discount=D("2.00")),
+    ]
+    assert codes(dinner(items=items, subtotal=D("13.00"), total=D("16.20"))) == []
+    # Ignoring the discount would make the items look like 15.00.
+    assert codes(dinner(items=items)) == [IssueCode.ITEMS_VS_SUBTOTAL]
+
+
+def test_tax_inclusive_prices_pass() -> None:
+    # Items 15.00 include 1.36 VAT; the subtotal is printed net of it.
+    receipt = dinner(subtotal=D("13.64"), discount=None, tax=D("1.36"), tip=None, total=D("15.00"))
+    assert codes(receipt) == []
+    # Still caught when neither reading of the subtotal fits.
+    assert codes(receipt.model_copy(update={"subtotal": D("12.00")})) == [
+        IssueCode.ITEMS_VS_SUBTOTAL,
+        IssueCode.TOTAL_MISMATCH,
+    ]
+
+
+def test_tax_already_inside_subtotal_passes() -> None:
+    # CORD test-043: subtotal 165,000 includes 15,000 tax; total is 165,000.
+    receipt = Receipt(
+        items=[LineItem(name="Cheese Tart", quantity=D(6), total_price=D(165000))],
+        subtotal=D(165000),
+        tax=D(15000),
+        total=D(165000),
+    )
+    assert codes(receipt) == []
+    # Without a tax line there is nothing to leave out, so a gap is still a gap.
+    assert codes(receipt.model_copy(update={"tax": None, "total": D(150000)})) == [
+        IssueCode.TOTAL_MISMATCH
+    ]
+
+
 def test_service_charge_counts_toward_total() -> None:
     assert codes(dinner(service_charge=D("2.00"), total=D("20.20"))) == []
 

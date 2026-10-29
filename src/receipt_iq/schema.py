@@ -23,7 +23,14 @@ class LineItem(BaseModel):
     quantity: Decimal = Field(default=Decimal(1), gt=0)
     # Many receipts print only the line total, so the unit price is optional.
     unit_price: Money | None = Field(default=None, ge=0)
+    # Price before any discount on this line, as printed.
     total_price: Money = Field(ge=0)
+    # A discount printed on this line ("-2,600" under the item), stored positive.
+    discount: Money | None = Field(default=None, ge=0)
+
+    @property
+    def net_price(self) -> Money:
+        return self.total_price - (self.discount or 0)
 
 
 class Receipt(BaseModel):
