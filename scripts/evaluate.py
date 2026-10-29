@@ -1,9 +1,11 @@
 """Score an extraction provider against a labeled CORD split.
 
-Usage: python scripts/evaluate.py {oracle,noisy,local} [split.parquet] [--limit N]
+Usage: python scripts/evaluate.py {oracle,noisy,local,gemini} [split] [--limit N]
 
-- local:  Tesseract OCR + phi3 via Ollama, fully on this machine. Results are
-  cached in data/cache/, so re-runs and interrupted runs don't redo work.
+- local:  Tesseract OCR + phi3 via Ollama, fully on this machine.
+- gemini: Gemini reads the image directly (free tier; needs GEMINI_API_KEY).
+  Real providers' results are cached in data/cache/, so re-runs and
+  interrupted runs (e.g. a used-up daily quota) don't redo work.
 - oracle: returns the answer itself. Everything must score 100%; anything less
   is a bug in the scorer.
 - noisy:  the answer with typical OCR mistakes injected (fixed seed). Simulated,
@@ -19,7 +21,8 @@ from pathlib import Path
 
 from receipt_iq.cache import CachedExtractor
 from receipt_iq.cord import CordExample, load_split
-from receipt_iq.evaluation import EvalReport, Extractor, evaluate
+from receipt_iq.evaluation import EvalReport, Extractor, TemporaryError, evaluate
+from receipt_iq.providers.gemini import DEFAULT_MODEL, Gemini
 from receipt_iq.providers.local import TesseractOllama
 from receipt_iq.schema import LineItem, Receipt
 
@@ -101,29 +104,38 @@ def print_report(provider: str, report: EvalReport) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("provider", choices=["oracle", "noisy", "local"])
+    parser.add_argument("provider", choices=["oracle", "noisy", "local", "gemini"])
     parser.add_argument("split", nargs="?", default="data/cord/validation.parquet")
     parser.add_argument("--limit", type=int, help="only the first N receipts")
     parser.add_argument("--prompt", default="v2", help="local provider prompt version")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Gemini model")
     args = parser.parse_args()
 
     examples = [e for e in load_split(Path(args.split)) if isinstance(e, CordExample)]
     examples = examples[: args.limit]
     answers = {e.image: e.receipt for e in examples}
 
+    cached: CachedExtractor | None = None
     extractor: Extractor
     if args.provider == "oracle":
         extractor = Oracle(answers)
     elif args.provider == "noisy":
         extractor = Noisy(answers)
     else:
-        local = TesseractOllama(prompt_version=args.prompt)
-        cached = CachedExtractor(local, local.version, CACHE_ROOT)
-        extractor = cached
+        provider: TesseractOllama | Gemini = (
+            TesseractOllama(prompt_version=args.prompt)
+            if args.provider == "local"
+            else Gemini(model=args.model)
+        )
+        extractor = cached = CachedExtractor(provider, provider.version, CACHE_ROOT)
 
-    report = evaluate(extractor, progress(examples), TOLERANCE)
+    try:
+        report = evaluate(extractor, progress(examples), TOLERANCE)
+    except TemporaryError as error:
+        done = cached.hits + cached.misses - 1 if cached else 0
+        sys.exit(f"\nstopped: {error}\n{done} receipts are cached; re-run to resume.")
     print_report(extractor.name, report)
-    if args.provider == "local":
+    if cached:
         print(f"  version {cached.version}; cache: {cached.hits} reused, {cached.misses} new calls")
 
 

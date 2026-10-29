@@ -32,6 +32,14 @@ class ExtractionError(Exception):
     """A provider couldn't produce a valid Receipt (bad JSON, timeout, ...)."""
 
 
+class TemporaryError(ExtractionError):
+    """The provider is unavailable right now (quota used up, service down).
+
+    Says nothing about the receipt, so it's never cached or scored as a
+    failure: an evaluation run stops instead, and resumes on the next run.
+    """
+
+
 class Extractor(Protocol):
     """Anything that turns a receipt image into a Receipt.
 
@@ -201,6 +209,8 @@ def evaluate(
         start = time.perf_counter()
         try:
             score = score_receipt(extractor.extract(image), expected, tolerance)
+        except TemporaryError:
+            raise
         except ExtractionError:
             score = failed_score(expected)
         elapsed = time.perf_counter() - start

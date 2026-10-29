@@ -13,10 +13,10 @@ from receipt_iq.providers.local import (
     OCR_VERSION,
     OCR_WIDTH,
     PROMPTS,
-    RESPONSE_SCHEMA,
     TesseractOllama,
     prepare_for_ocr,
 )
+from receipt_iq.providers.shared import RESPONSE_SCHEMA
 from receipt_iq.schema import Receipt
 from receipt_iq.validation import validate
 
