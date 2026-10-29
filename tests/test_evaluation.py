@@ -2,7 +2,14 @@ from decimal import Decimal
 
 import pytest
 
-from receipt_iq.evaluation import EvalReport, evaluate, match_items, name_similarity, score_receipt
+from receipt_iq.evaluation import (
+    EvalReport,
+    ExtractionError,
+    evaluate,
+    match_items,
+    name_similarity,
+    score_receipt,
+)
 from receipt_iq.schema import LineItem, Receipt
 
 D = Decimal
@@ -107,6 +114,23 @@ def test_report_aggregates() -> None:
     # dropped item is flagged; wrong tax with a matching total is not
     assert report.catch_rate() == pytest.approx(1 / 2)
     assert report.false_alarm_rate() == 0.0
+
+
+class Failing:
+    name = "failing"
+
+    def extract(self, image: bytes) -> Receipt:
+        raise ExtractionError("bad JSON")
+
+
+def test_failed_extraction_is_scored_not_crashed() -> None:
+    report = evaluate(Failing(), [(b"", answer())])
+    score = report.scores[0]
+    assert score.failed and score.flagged and not score.fully_correct
+    assert score.fields == {"subtotal": False, "tax": False, "total": False}
+    assert report.failure_rate() == 1.0
+    assert report.item_recall() == 0.0
+    assert report.median_seconds() is not None
 
 
 def test_empty_report_has_no_rates() -> None:

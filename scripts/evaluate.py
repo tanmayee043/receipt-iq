@@ -1,27 +1,31 @@
 """Score an extraction provider against a labeled CORD split.
 
-Usage: python scripts/evaluate.py [oracle|noisy] [data/cord/validation.parquet]
+Usage: python scripts/evaluate.py {oracle,noisy,local} [split.parquet] [--limit N]
 
-Real providers come later. Until then, two simulated ones exercise the harness
-end to end on real CORD answers:
+- local:  Tesseract OCR + phi3 via Ollama, fully on this machine. Results are
+  cached in data/cache/, so re-runs and interrupted runs don't redo work.
 - oracle: returns the answer itself. Everything must score 100%; anything less
   is a bug in the scorer.
-- noisy:  the answer with typical OCR mistakes injected (fixed seed). Shows the
-  report format and estimates the validator's catch rate on those mistakes.
-  These numbers are simulated, not a provider result.
+- noisy:  the answer with typical OCR mistakes injected (fixed seed). Simulated,
+  not a provider result; it exercises the validator's catch rate.
 """
 
+import argparse
 import random
 import sys
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
+from receipt_iq.cache import CachedExtractor
 from receipt_iq.cord import CordExample, load_split
-from receipt_iq.evaluation import AMOUNT_FIELDS, EvalReport, evaluate
+from receipt_iq.evaluation import EvalReport, Extractor, evaluate
+from receipt_iq.providers.local import TesseractOllama
 from receipt_iq.schema import LineItem, Receipt
 
 TOLERANCE = Decimal(100)  # IDR, as in check_cord_labels.py
 SEED = 7
+CACHE_ROOT = Path("data/cache")
 
 
 class Oracle:
@@ -90,22 +94,43 @@ def print_report(provider: str, report: EvalReport) -> None:
     print("  validator")
     print(f"    catch rate      {percent(report.catch_rate())}   (wrong receipts flagged)")
     print(f"    false alarms    {percent(report.false_alarm_rate())}   (right receipts flagged)")
+    print(f"  failed            {percent(report.failure_rate())}   (no usable output)")
+    seconds = report.median_seconds()
+    print(f"  median latency    {'n/a' if seconds is None else f'{seconds:.1f} s'} per receipt")
 
 
 def main() -> None:
-    provider = sys.argv[1] if len(sys.argv) > 1 else "oracle"
-    path = Path(sys.argv[2] if len(sys.argv) > 2 else "data/cord/validation.parquet")
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("provider", choices=["oracle", "noisy", "local"])
+    parser.add_argument("split", nargs="?", default="data/cord/validation.parquet")
+    parser.add_argument("--limit", type=int, help="only the first N receipts")
+    args = parser.parse_args()
 
-    examples = [e for e in load_split(path) if isinstance(e, CordExample)]
+    examples = [e for e in load_split(Path(args.split)) if isinstance(e, CordExample)]
+    examples = examples[: args.limit]
     answers = {e.image: e.receipt for e in examples}
-    extractors = {"oracle": Oracle(answers), "noisy": Noisy(answers)}
-    if provider not in extractors:
-        sys.exit(f"provider must be one of {sorted(extractors)}")
 
-    extractor = extractors[provider]
-    report = evaluate(extractor, ((e.image, e.receipt) for e in examples), TOLERANCE)
+    extractor: Extractor
+    if args.provider == "oracle":
+        extractor = Oracle(answers)
+    elif args.provider == "noisy":
+        extractor = Noisy(answers)
+    else:
+        local = TesseractOllama()
+        cached = CachedExtractor(local, local.version, CACHE_ROOT)
+        extractor = cached
+
+    report = evaluate(extractor, progress(examples), TOLERANCE)
     print_report(extractor.name, report)
-    assert set(report.field_accuracy()) == set(AMOUNT_FIELDS)
+    if args.provider == "local":
+        print(f"  version {cached.version}; cache: {cached.hits} reused, {cached.misses} new calls")
+
+
+def progress(examples: list[CordExample]) -> Iterator[tuple[bytes, Receipt]]:
+    for number, example in enumerate(examples, 1):
+        print(f"\r  {number}/{len(examples)} {example.id}", end="", file=sys.stderr, flush=True)
+        yield example.image, example.receipt
+    print(file=sys.stderr)
 
 
 if __name__ == "__main__":
