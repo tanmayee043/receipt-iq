@@ -111,6 +111,37 @@ What the numbers show:
 
 This is the baseline the cloud providers will be compared against.
 
+### Gemini 3.5 Flash (`providers/gemini.py`)
+
+Reads the image directly, so nothing is lost to OCR. Free tier, so only the public CORD
+dataset is sent.
+
+```
+image ──► Gemini API (JSON schema, temperature 0) ──► Receipt
+```
+
+Built for free-tier limits: requests are spaced 6 s apart, a rate-limit error (429) waits for
+the delay Google asks for, and a used-up daily quota stops the run cleanly. Quota and network
+errors are never cached or scored, so the next run resumes exactly where this one stopped.
+
+Model choice, checked on a new free-tier account (Oct 2026): `gemini-2.5-flash` is closed to new
+accounts, and `gemini-3.8-flash` never answered (a one-word reply hung for 3 minutes). The model
+is pinned rather than an alias like `gemini-flash-latest`, so runs stay comparable.
+
+**Partial result: first 12 of 98 validation receipts.** The free daily quota ran out after
+about 13 requests; the full run is being completed across several days from the cache.
+
+| Metric (same 12 receipts) | Local, prompt v2 | Gemini 3.5 Flash |
+|---|---|---|
+| Total correct | 58.3% | 100.0% |
+| Line items: F1 | 55.8% | 90.9% |
+| Fully correct receipts | 0 of 12 | 9 of 12 |
+| Median latency | 23.7 s | 13.6 s |
+
+```bash
+python scripts/evaluate.py gemini        # needs GEMINI_API_KEY; re-run daily to resume
+```
+
 ## Run it
 
 ```bash

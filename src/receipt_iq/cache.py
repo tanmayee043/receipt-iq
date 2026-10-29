@@ -7,8 +7,9 @@ instant. That matters for slow local models (tens of seconds per receipt) and
 for free cloud tiers with daily request limits. It also makes an interrupted
 run resumable.
 
-Failures are cached too, so a run doesn't retry a receipt the model can't
-handle every time. Delete the provider's cache folder to retry them.
+Failures are cached too (except temporary ones like a used-up quota), so a run
+doesn't retry a receipt the model can't handle every time. Delete the
+provider's cache folder to retry them.
 """
 
 import hashlib
@@ -16,7 +17,7 @@ import json
 import time
 from pathlib import Path
 
-from receipt_iq.evaluation import ExtractionError, Extractor
+from receipt_iq.evaluation import ExtractionError, Extractor, TemporaryError
 from receipt_iq.schema import Receipt
 
 
@@ -55,6 +56,8 @@ class CachedExtractor:
         try:
             receipt: str | None = self.inner.extract(image).model_dump_json()
             error = None
+        except TemporaryError:
+            raise  # not the receipt's fault: don't cache it
         except ExtractionError as failure:
             receipt, error = None, str(failure)
         return {"receipt": receipt, "error": error, "seconds": time.perf_counter() - start}
