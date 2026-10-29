@@ -109,6 +109,13 @@ def _line_item(entry: dict[str, Any]) -> LineItem | None:
     elif printed_discount:
         discount = abs(parse_amount(_as_list(printed_discount)[0]))
 
+    if total_price < 0:
+        # A discount printed as its own item ("Discount BCA 15%  -34,363"). It
+        # costs nothing and takes the amount off, so the items still add up
+        # to the printed subtotal.
+        discount = -total_price
+        total_price = Decimal(0)
+
     return LineItem(
         name=str(entry.get("nm") or entry.get("num") or "(unnamed)"),
         quantity=quantity,
@@ -138,6 +145,15 @@ def to_receipt(gt_parse: dict[str, Any]) -> Receipt:
         raise CordLabelError("label has no total_price")
 
     discount = _amount_field(sub_total, "discount_price", repeated="sum")
+    if discount:
+        discount = abs(discount)
+        line_discounts = sum((item.discount or 0 for item in items), Decimal(0))
+        if line_discounts == discount:
+            # The same discount printed twice: under the item and again under
+            # the subtotal. Keep it once, at receipt level, or it's subtracted
+            # twice.
+            items = [item.model_copy(update={"discount": None}) for item in items]
+
     service = _amount_field(sub_total, "service_price", repeated="sum")
     other_service = _amount_field(sub_total, "othersvc_price", repeated="sum")
     if other_service is not None:

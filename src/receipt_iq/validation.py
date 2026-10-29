@@ -85,12 +85,9 @@ def validate(receipt: Receipt, tolerance: Decimal = DEFAULT_TOLERANCE) -> Valida
         and not differs(items_sum, receipt.subtotal + receipt.tax)
     )
 
-    if (
-        receipt.items
-        and receipt.subtotal is not None
-        and differs(items_sum, receipt.subtotal)
-        and not tax_inclusive
-    ):
+    # Runs even with no items: a printed subtotal with nothing behind it means
+    # the items were missed, not that there weren't any.
+    if receipt.subtotal is not None and differs(items_sum, receipt.subtotal) and not tax_inclusive:
         result.issues.append(
             Issue(
                 code=IssueCode.ITEMS_VS_SUBTOTAL,
