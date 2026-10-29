@@ -6,8 +6,14 @@ receipt goes to human review instead of the database.
 
 Checks, from smallest to largest:
 1. Each line:  quantity x unit_price == line total (when the unit price is printed)
-2. Items:      sum of line totals == subtotal (when a subtotal is printed)
+2. Items:      sum of line totals (after line discounts) == subtotal (when printed)
 3. Receipt:    subtotal - discount + service_charge + tax + tip == total
+
+Tax-inclusive receipts (common where VAT is built into shelf prices) come in
+two layouts, and both are accepted:
+- the subtotal is printed net of tax, so items add up to subtotal + tax;
+- the subtotal already includes tax, so total = subtotal with no tax added.
+The cost: on those receipts the tax amount itself isn't cross-checked.
 """
 
 from dataclasses import dataclass, field
@@ -72,13 +78,24 @@ def validate(receipt: Receipt, tolerance: Decimal = DEFAULT_TOLERANCE) -> Valida
                 )
             )
 
-    items_sum = sum((item.total_price for item in receipt.items), Decimal(0))
+    items_sum = sum((item.net_price for item in receipt.items), Decimal(0))
+    tax_inclusive = (
+        receipt.subtotal is not None
+        and receipt.tax is not None
+        and not differs(items_sum, receipt.subtotal + receipt.tax)
+    )
 
-    if receipt.items and receipt.subtotal is not None and differs(items_sum, receipt.subtotal):
+    if (
+        receipt.items
+        and receipt.subtotal is not None
+        and differs(items_sum, receipt.subtotal)
+        and not tax_inclusive
+    ):
         result.issues.append(
             Issue(
                 code=IssueCode.ITEMS_VS_SUBTOTAL,
-                message=f"line items add up to {items_sum}, subtotal says {receipt.subtotal}",
+                message=f"line items add up to {items_sum}, subtotal says {receipt.subtotal}"
+                + (f" (or {receipt.subtotal + receipt.tax} with tax)" if receipt.tax else ""),
                 expected=items_sum,
                 actual=receipt.subtotal,
                 location="subtotal",
@@ -101,8 +118,13 @@ def validate(receipt: Receipt, tolerance: Decimal = DEFAULT_TOLERANCE) -> Valida
         + (receipt.tax or 0)
         + (receipt.tip or 0)
     )
+    # Tax printed for information only, already inside the subtotal ("PPN
+    # included"). Only allowed when there is a tax to leave out.
+    tax_already_included = receipt.tax is not None and not differs(
+        expected_total - receipt.tax, receipt.total
+    )
     result.total_verified = True
-    if differs(expected_total, receipt.total):
+    if differs(expected_total, receipt.total) and not tax_already_included:
         result.issues.append(
             Issue(
                 code=IssueCode.TOTAL_MISMATCH,

@@ -9,6 +9,7 @@ description = "Turn receipt photos into validated line-item data, and measure ho
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7,<3",
+    "pyarrow>=16",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,11 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# pyarrow ships no type hints
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

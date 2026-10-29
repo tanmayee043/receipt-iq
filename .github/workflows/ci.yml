@@ -18,5 +18,5 @@ jobs:
       # --check fails the build instead of rewriting files
       - run: ruff format --check .
       - run: ruff check .
-      - run: mypy src tests
+      - run: mypy src tests scripts
       - run: pytest
