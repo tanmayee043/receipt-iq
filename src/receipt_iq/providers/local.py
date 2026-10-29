@@ -15,6 +15,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
@@ -23,13 +24,23 @@ from pydantic import ValidationError
 from receipt_iq.evaluation import ExtractionError
 from receipt_iq.schema import Receipt
 
-# Bump when the OCR settings or the prompt change: the cache key includes both,
-# so old results are never reused for a different pipeline.
+# Bump when the OCR settings change: the cache key includes this and the prompt
+# version, so old results are never reused for a different pipeline.
 OCR_VERSION = "gray2000-psm6"
-PROMPT_VERSION = "v1"
 OCR_WIDTH = 2000
 
-SYSTEM_PROMPT = """\
+
+@dataclass(frozen=True)
+class Prompt:
+    system: str
+    # Worked examples as (OCR text, expected JSON) pairs, shown before the real
+    # receipt. Made up, never taken from the evaluation splits.
+    examples: list[tuple[str, str]] = field(default_factory=list)
+    # Cap on generated tokens; stops runaway output on garbled OCR text.
+    max_tokens: int | None = None
+
+
+_V1_SYSTEM = """\
 You extract data from the OCR text of a shop receipt. The text may contain OCR
 mistakes. Return only JSON matching the schema.
 
@@ -43,6 +54,69 @@ Rules:
   Never compute or guess a value.
 - Ignore cash paid, change, and card payment lines.
 """
+
+# v2 targets what v1's validation run showed: phi3 never filled in the
+# subtotal, invented item names ("item1"), computed totals instead of copying
+# them, and ran until the timeout on garbled text.
+_V2_SYSTEM = """\
+You copy data from the OCR text of a shop receipt into JSON. The text may
+contain OCR mistakes. Copy what is printed; never calculate or invent anything.
+
+Items:
+- One entry per purchased line, with the name copied as printed. Never use
+  placeholder names like "item1".
+- "total_price" is the amount printed on that line. "quantity" is the count
+  printed before the name, default 1.
+- A discount printed under an item goes in that item's "discount".
+
+Receipt-level amounts, found by the label printed next to them:
+- "subtotal": SUBTOTAL, SUB TOTAL, JUMLAH
+- "tax": TAX, PB1, PPN, VAT
+- "service_charge": SERVICE, SVC, SC
+- "discount": DISC, DISKON, DISCOUNT (below the subtotal)
+- "total": the amount on the TOTAL line, copied exactly
+Use null for an amount whose label isn't printed.
+
+Number format:
+- "." and "," are thousands separators: "24.000" and "24,000" are 24000.
+- Discounts are positive numbers, even when printed as "-3.000".
+
+Ignore cash (TUNAI, CASH), change (KEMBALI, CHANGE) and card payment lines.
+"""
+
+_V2_EXAMPLE_OCR = """\
+KOPI KITA
+JL. MERDEKA 12
+2 ES KOPI SUSU 36.000
+1 ROTI BAKAR 18,000
+  DISC -3.000
+SUBTOTAL 51.000
+PB1 10% 5.100
+TOTAL 56.100
+TUNAI 100.000
+KEMBALI 43.900"""
+
+_V2_EXAMPLE_JSON = json.dumps(
+    {
+        "items": [
+            {"name": "ES KOPI SUSU", "quantity": 2, "unit_price": None, "total_price": 36000,
+             "discount": None},
+            {"name": "ROTI BAKAR", "quantity": 1, "unit_price": None, "total_price": 18000,
+             "discount": 3000},
+        ],
+        "subtotal": 51000, "discount": None, "service_charge": None, "tax": 5100,
+        "tip": None, "total": 56100,
+    }
+)  # fmt: skip
+
+PROMPTS = {
+    "v1": Prompt(system=_V1_SYSTEM),
+    "v2": Prompt(
+        system=_V2_SYSTEM,
+        examples=[(_V2_EXAMPLE_OCR, _V2_EXAMPLE_JSON)],
+        max_tokens=768,
+    ),
+}
 
 # Kept simpler than the Receipt model's own JSON schema: small models follow a
 # flat schema with plain numbers more reliably. Pydantic still enforces the
@@ -145,14 +219,16 @@ class TesseractOllama:
     def __init__(
         self,
         model: str = "phi3",
+        prompt_version: str = "v2",
         url: str | None = None,
         timeout: float = 300,
         ocr: Callable[[bytes], str] = tesseract_ocr,
         chat: Callable[[str, dict[str, Any], float], str] = ollama_chat,
     ) -> None:
         self.model = model
+        self.prompt = PROMPTS[prompt_version]
         self.name = f"tesseract+{model}"
-        self.version = f"{OCR_VERSION}.prompt-{PROMPT_VERSION}"
+        self.version = f"{OCR_VERSION}.prompt-{prompt_version}"
         self.url = url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         self.timeout = timeout
         # Injected so tests can run without Tesseract or a model.
@@ -164,10 +240,16 @@ class TesseractOllama:
         if not text.strip():
             raise ExtractionError("OCR found no text")
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ]
+        messages = [{"role": "system", "content": self.prompt.system}]
+        for example_text, example_json in self.prompt.examples:
+            messages += [
+                {"role": "user", "content": example_text},
+                {"role": "assistant", "content": example_json},
+            ]
+        messages.append({"role": "user", "content": text})
+        options: dict[str, Any] = {"temperature": 0, "num_ctx": 4096}
+        if self.prompt.max_tokens is not None:
+            options["num_predict"] = self.prompt.max_tokens
         # One retry: show the model its own invalid output and the error.
         for attempt in range(2):
             reply = self.chat(
@@ -178,7 +260,7 @@ class TesseractOllama:
                     "format": RESPONSE_SCHEMA,
                     "stream": False,
                     # temperature 0: same input, same output, so runs are comparable
-                    "options": {"temperature": 0, "num_ctx": 4096},
+                    "options": options,
                 },
                 self.timeout,
             )

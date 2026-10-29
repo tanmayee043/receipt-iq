@@ -78,27 +78,36 @@ image ──► grayscale, 2000 px wide ──► Tesseract (--psm 6) ──► 
 Results are cached by image hash + provider + version (OCR settings and prompt), so re-runs
 are free and an interrupted run resumes.
 
+Prompts are versioned and kept side by side (`PROMPTS` in `local.py`), so every result can be
+reproduced. Run one with `python scripts/evaluate.py local --prompt v1`.
+
 **CORD validation split, 98 receipts, CPU only (i5-1135G7):**
 
-| Metric | Result |
-|---|---|
-| Total correct | 32.7% |
-| Line items: precision / recall / F1 | 18.2% / 24.6% / 20.9% |
-| Fully correct receipts | 2.0% |
-| Failed (no usable output) | 8.2% (all 5-minute timeouts) |
-| Validator catch rate / false alarms | 45.8% / 0.0% |
-| Median latency | 22.1 s per receipt |
+| Metric | Prompt v1 | Prompt v2 |
+|---|---|---|
+| Total correct | 32.7% | 35.7% |
+| Subtotal / tax correct | 0.0% / 8.7% | 25.6% / 13.2% |
+| Line items: precision / recall / F1 | 18.2% / 24.6% / 20.9% | 31.6% / 26.7% / 29.0% |
+| Fully correct receipts | 2.0% | 3.1% |
+| Failed (no usable output) | 8.2% (timeouts) | 1.0% |
+| Validator catch rate / false alarms | 45.8% / 0.0% | 42.1% / 0.0% |
+| Median latency | 22.1 s | 23.0 s |
+
+**v1 → v2:** v1's run showed phi3 never returned a subtotal, invented item names ("item1"),
+computed totals instead of copying them, and ran until the 5-minute timeout on garbled text.
+v2 names the labels to look for (SUBTOTAL, PB1/PPN, SERVICE, DISC), forbids placeholder names
+and calculated values, adds one made-up worked example, and caps output at 768 tokens.
 
 What the numbers show:
 
 - **OCR is the bottleneck.** Tesseract's default layout mode recovered 10 of 34 amounts on a
-  12-receipt sample; switching to `--psm 6` (one uniform text block) raised that to 24.
-- **phi3 never returned a subtotal** (0 of 90 outputs), so subtotal accuracy is 0%.
-- **The validator is weaker against an LLM than against OCR noise** (46% catch rate here vs.
-  97% on simulated OCR errors): phi3 invents items whose prices add up to its own total, so
-  the arithmetic stays consistent while being wrong.
-- **Timeouts:** on garbled OCR text phi3 can generate a very long list of junk items until the
-  5-minute limit.
+  12-receipt sample; switching to `--psm 6` (one uniform text block) raised that to 24. No
+  prompt can recover what OCR never read.
+- **The output cap removed the timeouts** (8 → 0); the one v2 failure is invalid JSON.
+- **Small samples mislead.** On the first 10 receipts v2's item F1 was 45%; on all 98 it's 29%.
+- **The validator is weaker against an LLM than against OCR noise** (42–46% catch rate here
+  vs. 97% on simulated OCR errors): phi3 invents items whose prices add up to its own total,
+  so the arithmetic stays consistent while being wrong.
 
 This is the baseline the cloud providers will be compared against.
 

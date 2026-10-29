@@ -104,6 +104,7 @@ def main() -> None:
     parser.add_argument("provider", choices=["oracle", "noisy", "local"])
     parser.add_argument("split", nargs="?", default="data/cord/validation.parquet")
     parser.add_argument("--limit", type=int, help="only the first N receipts")
+    parser.add_argument("--prompt", default="v2", help="local provider prompt version")
     args = parser.parse_args()
 
     examples = [e for e in load_split(Path(args.split)) if isinstance(e, CordExample)]
@@ -116,7 +117,7 @@ def main() -> None:
     elif args.provider == "noisy":
         extractor = Noisy(answers)
     else:
-        local = TesseractOllama()
+        local = TesseractOllama(prompt_version=args.prompt)
         cached = CachedExtractor(local, local.version, CACHE_ROOT)
         extractor = cached
 

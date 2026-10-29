@@ -12,11 +12,13 @@ from receipt_iq.evaluation import ExtractionError
 from receipt_iq.providers.local import (
     OCR_VERSION,
     OCR_WIDTH,
-    PROMPT_VERSION,
+    PROMPTS,
     RESPONSE_SCHEMA,
     TesseractOllama,
     prepare_for_ocr,
 )
+from receipt_iq.schema import Receipt
+from receipt_iq.validation import validate
 
 GOOD = json.dumps(
     {
@@ -59,7 +61,7 @@ def test_request_is_deterministic_and_schema_constrained() -> None:
     payload = model.payloads[0]
     assert payload["format"] == RESPONSE_SCHEMA
     assert payload["options"]["temperature"] == 0
-    assert payload["messages"][1]["content"].startswith("NASI GORENG")
+    assert payload["messages"][-1]["content"].startswith("NASI GORENG")
 
 
 def test_invalid_reply_is_retried_with_the_error() -> None:
@@ -99,5 +101,30 @@ def test_unreadable_image_is_an_extraction_error() -> None:
 
 
 def test_version_covers_ocr_and_prompt() -> None:
-    version = TesseractOllama().version
-    assert OCR_VERSION in version and PROMPT_VERSION in version
+    assert TesseractOllama(prompt_version="v1").version == f"{OCR_VERSION}.prompt-v1"
+    assert TesseractOllama().version == f"{OCR_VERSION}.prompt-v2"
+
+
+@pytest.mark.parametrize("version", sorted(PROMPTS))
+def test_worked_examples_are_correct(version: str) -> None:
+    # A wrong example would teach the model wrong answers.
+    for _, example_json in PROMPTS[version].examples:
+        assert validate(Receipt.model_validate_json(example_json)).passed
+
+
+def test_v2_sends_example_and_caps_output() -> None:
+    model = FakeModel(GOOD)
+    TesseractOllama(prompt_version="v2", ocr=lambda image: "TEXT", chat=model).extract(b"x")
+    payload = model.payloads[0]
+    roles = [m["role"] for m in payload["messages"]]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert payload["messages"][-1]["content"] == "TEXT"
+    assert payload["options"]["num_predict"] == 768
+
+
+def test_v1_is_unchanged() -> None:
+    model = FakeModel(GOOD)
+    TesseractOllama(prompt_version="v1", ocr=lambda image: "TEXT", chat=model).extract(b"x")
+    payload = model.payloads[0]
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"]
+    assert "num_predict" not in payload["options"]
