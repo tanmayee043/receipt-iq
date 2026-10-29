@@ -11,6 +11,8 @@ Three questions, per provider:
 """
 
 import re
+import statistics
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -26,8 +28,17 @@ AMOUNT_FIELDS = ("subtotal", "discount", "service_charge", "tax", "tip", "total"
 NAME_SIMILARITY = 0.8
 
 
+class ExtractionError(Exception):
+    """A provider couldn't produce a valid Receipt (bad JSON, timeout, ...)."""
+
+
 class Extractor(Protocol):
-    """Anything that turns a receipt image into a Receipt."""
+    """Anything that turns a receipt image into a Receipt.
+
+    Raises ExtractionError when it can't. Extractors that replay stored results
+    (see cache.py) also set `last_seconds` to the original call's duration, so
+    latency isn't reported as near zero on a re-run.
+    """
 
     name: str
 
@@ -50,6 +61,10 @@ class ReceiptScore:
     items_predicted: int
     items_expected: int
     flagged: bool
+    # True when the provider returned nothing usable; scored as all wrong and
+    # counted as flagged, since it would go to human review.
+    failed: bool = False
+    seconds: float | None = None
 
     @property
     def fully_correct(self) -> bool:
@@ -106,6 +121,17 @@ def score_receipt(
     )
 
 
+def failed_score(expected: Receipt) -> ReceiptScore:
+    return ReceiptScore(
+        fields={name: False for name in AMOUNT_FIELDS if getattr(expected, name) is not None},
+        items_matched=0,
+        items_predicted=0,
+        items_expected=len(expected.items),
+        flagged=True,
+        failed=True,
+    )
+
+
 def _ratio(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
 
@@ -156,6 +182,13 @@ class EvalReport:
         right = [s for s in self.scores if s.fully_correct]
         return _ratio(sum(s.flagged for s in right), len(right))
 
+    def failure_rate(self) -> float | None:
+        return _ratio(sum(s.failed for s in self.scores), self.receipts)
+
+    def median_seconds(self) -> float | None:
+        times = [s.seconds for s in self.scores if s.seconds is not None]
+        return statistics.median(times) if times else None
+
 
 def evaluate(
     extractor: Extractor,
@@ -165,5 +198,12 @@ def evaluate(
     """Run `extractor` over (image, expected receipt) pairs and score each one."""
     report = EvalReport()
     for image, expected in examples:
-        report.scores.append(score_receipt(extractor.extract(image), expected, tolerance))
+        start = time.perf_counter()
+        try:
+            score = score_receipt(extractor.extract(image), expected, tolerance)
+        except ExtractionError:
+            score = failed_score(expected)
+        elapsed = time.perf_counter() - start
+        score.seconds = getattr(extractor, "last_seconds", None) or elapsed
+        report.scores.append(score)
     return report

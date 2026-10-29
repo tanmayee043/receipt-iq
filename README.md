@@ -64,6 +64,44 @@ python scripts/evaluate.py oracle
 python scripts/evaluate.py noisy
 ```
 
+## Providers
+
+### Local: Tesseract OCR + phi3 (`providers/local.py`)
+
+Fully on the laptop: nothing leaves the machine and it costs nothing per page.
+
+```
+image ──► grayscale, 2000 px wide ──► Tesseract (--psm 6) ──► phi3 via Ollama ──► Receipt
+                                                    JSON schema, temperature 0, 1 retry
+```
+
+Results are cached by image hash + provider + version (OCR settings and prompt), so re-runs
+are free and an interrupted run resumes.
+
+**CORD validation split, 98 receipts, CPU only (i5-1135G7):**
+
+| Metric | Result |
+|---|---|
+| Total correct | 32.7% |
+| Line items: precision / recall / F1 | 18.2% / 24.6% / 20.9% |
+| Fully correct receipts | 2.0% |
+| Failed (no usable output) | 8.2% (all 5-minute timeouts) |
+| Validator catch rate / false alarms | 45.8% / 0.0% |
+| Median latency | 22.1 s per receipt |
+
+What the numbers show:
+
+- **OCR is the bottleneck.** Tesseract's default layout mode recovered 10 of 34 amounts on a
+  12-receipt sample; switching to `--psm 6` (one uniform text block) raised that to 24.
+- **phi3 never returned a subtotal** (0 of 90 outputs), so subtotal accuracy is 0%.
+- **The validator is weaker against an LLM than against OCR noise** (46% catch rate here vs.
+  97% on simulated OCR errors): phi3 invents items whose prices add up to its own total, so
+  the arithmetic stays consistent while being wrong.
+- **Timeouts:** on garbled OCR text phi3 can generate a very long list of junk items until the
+  5-minute limit.
+
+This is the baseline the cloud providers will be compared against.
+
 ## Run it
 
 ```bash
