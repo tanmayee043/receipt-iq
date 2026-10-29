@@ -197,6 +197,41 @@ def test_items_without_a_price() -> None:
     assert [(i.name, i.total_price) for i in receipt.items] == [("Teh Tawar", D(8000))]
 
 
+def test_discount_printed_on_line_and_subtotal_counts_once() -> None:
+    # validation-007: -9,545 appears under the item and again under the subtotal.
+    receipt = to_receipt(
+        {
+            "menu": {"nm": "Choco Devil", "cnt": "4", "discountprice": "-9,545", "price": "63,636"},
+            "sub_total": {"subtotal_price": "63,636", "discount_price": "-9,545",
+                          "tax_price": "5,409"},
+            "total": {"total_price": "59,500"},
+        }
+    )  # fmt: skip
+    assert receipt.items[0].discount is None
+    assert receipt.discount == D(9545)
+    assert validate(receipt).passed
+
+
+def test_discount_printed_as_a_negative_item() -> None:
+    # validation-021: "Discount BCA 15%" is its own line at -34,363.
+    receipt = to_receipt(
+        {
+            "menu": [
+                {"nm": "Mango Lemon Tea", "cnt": "1", "price": "Rp 29,090"},
+                {"nm": "Sliders Set", "cnt": "1", "price": "Rp 113,636"},
+                {"nm": "Chicken Vege Rice Bowl", "cnt": "1", "price": "Rp 86,363"},
+                {"nm": "Discount BCA 15%", "cnt": "1", "price": "-Rp 34,363"},
+            ],
+            "sub_total": {"subtotal_price": "Rp 194,726", "service_price": "Rp 9,736",
+                          "tax_price": "Rp 20,446"},
+            "total": {"total_price": "Rp 224,908"},
+        }
+    )  # fmt: skip
+    line = receipt.items[3]
+    assert (line.total_price, line.discount, line.net_price) == (D(0), D(34363), D(-34363))
+    assert validate(receipt).passed
+
+
 def test_tax_inclusive_receipt() -> None:
     # test-048: item prices include tax; subtotal is printed net of it.
     receipt = to_receipt(

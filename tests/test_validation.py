@@ -63,6 +63,12 @@ def test_missed_line_item_shows_up_against_subtotal() -> None:
     assert codes(dinner(items=items)) == [IssueCode.ITEMS_VS_SUBTOTAL]
 
 
+def test_all_items_missed_is_caught() -> None:
+    # Regression: found by the evaluation harness. With no items, the items
+    # check was skipped, so subtotal and total agreeing was enough to pass.
+    assert codes(dinner(items=[])) == [IssueCode.ITEMS_VS_SUBTOTAL]
+
+
 def test_without_printed_subtotal_items_are_the_base() -> None:
     assert codes(dinner(subtotal=None)) == []
     assert codes(dinner(subtotal=None, total=D("20.00"))) == [IssueCode.TOTAL_MISMATCH]
