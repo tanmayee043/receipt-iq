@@ -132,7 +132,8 @@ def main() -> None:
     try:
         report = evaluate(extractor, progress(examples), TOLERANCE)
     except TemporaryError as error:
-        done = cached.hits + cached.misses - 1 if cached else 0
+        # Every receipt with a cache entry, not just the ones reached this run.
+        done = len(list(cached.directory.glob("*.json"))) if cached else 0
         sys.exit(f"\nstopped: {error}\n{done} receipts are cached; re-run to resume.")
     print_report(extractor.name, report)
     if cached:
