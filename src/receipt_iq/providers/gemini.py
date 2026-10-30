@@ -2,6 +2,10 @@
 
     image ──► Gemini API (JSON schema, temperature 0) ──► Receipt
 
+The same class runs Gemma, Google's open-weights model on the same API (e.g.
+`Gemini(model="gemma-4-31b-it")`). Gemma doesn't support enforced JSON output,
+so it gets the schema in the prompt and its JSON is extracted from the reply.
+
 Runs on the free tier, which has two consequences built into this module:
 - Rate limits. Requests are spaced out (`min_interval`), and a 429 waits for
   the delay Google asks for before retrying. A used-up daily quota stops the
@@ -15,6 +19,7 @@ a request header, never in the URL, so it can't end up in logs.
 """
 
 import base64
+import http.client
 import io
 import json
 import os
@@ -39,6 +44,8 @@ PROMPT_VERSION = "v1"
 # never answered (even a one-word reply hung for 3 minutes).
 DEFAULT_MODEL = "gemini-3.5-flash"
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+# Receipts in a row with a persistent server error before it counts as an outage.
+OUTAGE_AFTER = 3
 
 PROMPT = """\
 Copy the data printed on this shop receipt into JSON. Copy what is printed;
@@ -110,8 +117,10 @@ def http_post(url: str, body: dict[str, Any], headers: dict[str, str], timeout: 
             return error.code, json.load(error)
         except json.JSONDecodeError:
             return error.code, {}
-    except (urllib.error.URLError, TimeoutError) as failure:
-        # Network trouble, not the receipt's fault.
+    except (OSError, http.client.HTTPException) as failure:
+        # Network trouble, not the receipt's fault: unreachable, timed out, or
+        # the connection dropped mid-reply (RemoteDisconnected), which urllib
+        # doesn't wrap in URLError.
         raise TemporaryError(f"gemini unreachable: {failure}") from failure
 
 
@@ -124,6 +133,18 @@ def _retry_delay(body: dict[str, Any]) -> float | None:
     return None
 
 
+def find_json(text: str) -> str:
+    """The JSON object in a free-text reply: a ```json fence if there is one,
+    otherwise everything from the first "{" to the last "}"."""
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fenced:
+        return str(fenced[-1])
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end < start:
+        raise ExtractionError(f"no JSON in reply: {text[:200]!r}")
+    return text[start : end + 1]
+
+
 def _daily_quota_exhausted(body: dict[str, Any]) -> bool:
     # QuotaFailure details name the quota, e.g. "...PerDayPerProjectPerModel".
     return "PerDay" in json.dumps(body.get("error", {}).get("details", []))
@@ -134,9 +155,11 @@ class Gemini:
         self,
         model: str = DEFAULT_MODEL,
         api_key: str | None = None,
+        structured_output: bool | None = None,
         min_interval: float = 6.0,
         max_retries: int = 4,
-        timeout: float = 120,
+        # Generous: Gemma reasons before answering and can take minutes under load.
+        timeout: float = 300,
         post: Callable[[str, dict[str, Any], dict[str, str], float], Response] = http_post,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -146,6 +169,12 @@ class Gemini:
             raise RuntimeError("set the GEMINI_API_KEY environment variable")
         self.model = model
         self.name = model
+        # Gemma (Google's open model on the same API) rejects responseSchema
+        # with a server error, so it gets the schema in the prompt instead and
+        # its JSON is pulled out of the reply text.
+        self.structured_output = (
+            not model.startswith("gemma") if structured_output is None else structured_output
+        )
         self.version = f"prompt-{PROMPT_VERSION}"
         self._headers = {"x-goog-api-key": key}
         self.min_interval = min_interval
@@ -156,8 +185,18 @@ class Gemini:
         self._sleep = sleep
         self._clock = clock
         self._last_request: float | None = None
+        self._server_failures_in_a_row = 0
 
     def extract(self, image: bytes) -> Receipt:
+        config: dict[str, Any] = {"temperature": 0}
+        prompt = PROMPT
+        if self.structured_output:
+            config["responseMimeType"] = "application/json"
+            config["responseSchema"] = to_gemini_schema(RESPONSE_SCHEMA)
+        else:
+            prompt += (
+                f"\nReturn only JSON matching this JSON Schema:\n{json.dumps(RESPONSE_SCHEMA)}\n"
+            )
         body = {
             "contents": [
                 {
@@ -168,25 +207,22 @@ class Gemini:
                                 "data": base64.b64encode(image).decode(),
                             }
                         },
-                        {"text": PROMPT},
+                        {"text": prompt},
                     ]
                 }
             ],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-                "responseSchema": to_gemini_schema(RESPONSE_SCHEMA),
-            },
+            "generationConfig": config,
         }
         reply = self._request(body)
         try:
-            text = reply["candidates"][0]["content"]["parts"][0]["text"]
+            # Models that reason out loud put it in earlier parts; the answer is last.
+            text = reply["candidates"][0]["content"]["parts"][-1]["text"]
         except (KeyError, IndexError) as failure:
             candidates = reply.get("candidates") or [{}]
             reason = reply.get("promptFeedback") or candidates[0].get("finishReason")
             raise ExtractionError(f"no content in reply ({reason})") from failure
         try:
-            return Receipt.model_validate_json(text)
+            return Receipt.model_validate_json(text if self.structured_output else find_json(text))
         except ValidationError as error:
             raise ExtractionError(f"invalid output: {error}") from error
 
@@ -194,8 +230,13 @@ class Gemini:
         url = f"{API_URL}/{self.model}:generateContent"
         for attempt in range(self.max_retries + 1):
             self._wait_for_slot()
-            status, reply = self._post(url, body, self._headers, self.timeout)
+            try:
+                status, reply = self._post(url, body, self._headers, self.timeout)
+            except TemporaryError as failure:
+                # Timeout or network trouble: retry like an overloaded service.
+                status, reply = 0, {"error": {"message": str(failure)}}
             if status == 200:
+                self._server_failures_in_a_row = 0
                 return reply
             if status in (401, 403):
                 raise RuntimeError(f"gemini rejected the API key (HTTP {status})")
@@ -206,14 +247,28 @@ class Gemini:
                 raise RuntimeError(f"gemini model {self.model!r} unavailable: {message}")
             if status == 429 and _daily_quota_exhausted(reply):
                 raise TemporaryError("gemini daily free quota used up; resume tomorrow")
-            if status == 429 or status >= 500:
-                # Per-minute limit or overloaded service: wait and try again,
-                # unless that was the last attempt.
+            if status in (0, 429) or status >= 500:
+                # Network trouble, per-minute limit or overloaded service:
+                # wait and try again, unless that was the last attempt.
                 if attempt < self.max_retries:
                     self._sleep(_retry_delay(reply) or 5 * 2**attempt)
                 continue
             raise ExtractionError(f"gemini HTTP {status}: {reply.get('error', {}).get('message')}")
-        raise TemporaryError(f"gemini still failing after {self.max_retries} retries")
+
+        detail = reply.get("error", {}).get("message")
+        message = f"HTTP {status} after {self.max_retries} retries: {detail}"
+        if status != 500:
+            # Rate limits, 503 "high demand", timeouts: the service, not the
+            # receipt. Stop the run; the next one resumes from the cache.
+            raise TemporaryError(f"gemini unavailable: {message}")
+        # A 500 that survives every retry. If the receipts before it worked,
+        # it's this input (Gemma returns 500 on some images every time): fail
+        # this receipt and move on, like a dead-letter queue. Several in a row
+        # look like an outage instead: stop the run.
+        self._server_failures_in_a_row += 1
+        if self._server_failures_in_a_row >= OUTAGE_AFTER:
+            raise TemporaryError(f"gemini looks down ({OUTAGE_AFTER} receipts in a row): {message}")
+        raise ExtractionError(f"gemini server error on this receipt: {message}")
 
     def _wait_for_slot(self) -> None:
         """Space requests at least `min_interval` seconds apart."""

@@ -1,7 +1,9 @@
 """Gemini provider logic with the API faked: no network, no key, no real waiting."""
 
+import http.client
 import io
 import json
+import urllib.request
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,14 @@ from PIL import Image
 
 from receipt_iq.cache import CachedExtractor
 from receipt_iq.evaluation import ExtractionError, TemporaryError, evaluate
-from receipt_iq.providers.gemini import DEFAULT_MODEL, Gemini, to_gemini_schema
+from receipt_iq.providers.gemini import (
+    DEFAULT_MODEL,
+    OUTAGE_AFTER,
+    Gemini,
+    find_json,
+    http_post,
+    to_gemini_schema,
+)
 from receipt_iq.schema import Receipt
 
 
@@ -108,15 +117,76 @@ def test_daily_quota_stops_without_retrying() -> None:
     assert len(api.calls) == 1
 
 
-def test_server_errors_back_off_then_give_up() -> None:
+def test_persistent_server_error_fails_only_that_receipt() -> None:
+    # Regression: Gemma returns 500 on some receipts every time. Treating that
+    # as temporary stopped the whole run at one "poison" receipt.
     t = FakeTime()
-    api = FakeApi(*[(503, {})] * 5)
-    with pytest.raises(TemporaryError, match="retries"):
-        gemini(api, t).extract(png())
+    api = FakeApi(*[(500, {})] * 5, OK)
+    provider = gemini(api, t)
+    with pytest.raises(ExtractionError, match="on this receipt") as failure:
+        provider.extract(png())
+    assert not isinstance(failure.value, TemporaryError)
     assert len(api.calls) == 5
     # Exponential backoff between attempts (the 1 s is request spacing topping
     # up the first 5 s wait), and no pointless wait after the last attempt.
     assert t.sleeps == [5, 1.0, 10, 20, 40]
+    # The next receipt goes through.
+    assert provider.extract(png()).total == Decimal(5000)
+
+
+def test_server_errors_on_several_receipts_in_a_row_are_an_outage() -> None:
+    provider = gemini(FakeApi(*[(500, {})] * 15))
+    for _ in range(OUTAGE_AFTER - 1):
+        with pytest.raises(ExtractionError, match="on this receipt"):
+            provider.extract(png())
+    with pytest.raises(TemporaryError, match="looks down"):
+        provider.extract(png())
+
+
+def test_a_success_resets_the_outage_count() -> None:
+    failures: list[tuple[int, dict[str, Any]]] = [(500, {})] * 5
+    provider = gemini(FakeApi(*failures, OK, *failures, *failures, OK))
+    for expect_failure in (True, False, True, True, False):
+        if expect_failure:
+            with pytest.raises(ExtractionError, match="on this receipt"):
+                provider.extract(png())
+        else:
+            provider.extract(png())
+
+
+@pytest.mark.parametrize(
+    "response",
+    [PER_MINUTE, (503, {"error": {"message": "This model is currently experiencing high demand"}})],
+)
+def test_overload_that_never_clears_is_temporary(response: tuple[int, dict[str, Any]]) -> None:
+    # Regression: a persistent 503 "high demand" was cached as a bad receipt.
+    with pytest.raises(TemporaryError, match="unavailable"):
+        gemini(FakeApi(*[response] * 5)).extract(png())
+
+
+def test_timeouts_are_retried() -> None:
+    # Regression: one read timeout stopped the whole run.
+    responses = iter([TemporaryError("timed out"), OK])
+
+    def flaky(url: str, body: dict[str, Any], headers: dict[str, str], timeout: float) -> Any:
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    t = FakeTime()
+    provider = Gemini(api_key="k", post=flaky, sleep=t.sleep, clock=t.clock)
+    assert provider.extract(png()).total == Decimal(5000)
+
+
+def test_dropped_connection_is_temporary(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression: the server closing the connection mid-reply crashed the run.
+    def drop(*args: Any, **kwargs: Any) -> Any:
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    monkeypatch.setattr(urllib.request, "urlopen", drop)
+    with pytest.raises(TemporaryError, match="unreachable"):
+        http_post("https://example.invalid", {}, {}, 1)
 
 
 def test_bad_key_is_a_config_error_not_a_receipt_failure() -> None:
@@ -152,3 +222,41 @@ def test_retired_model_is_a_config_error_not_a_receipt_failure(tmp_path: Path) -
     with pytest.raises(RuntimeError, match="unavailable"):
         cached.extract(png())
     assert not list(tmp_path.rglob("*.json"))
+
+
+# Gemma: same API, but no enforced JSON output.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('{"total": 1}', '{"total": 1}'),
+        ('Thinking... ```json\n{"total": 1}\n``` done', '{"total": 1}'),
+        ('draft ```json\n{"total": 0}\n``` final ```json\n{"total": 1}\n```', '{"total": 1}'),
+        ('The answer is {"total": 1}.', '{"total": 1}'),
+    ],
+)
+def test_find_json(text: str, expected: str) -> None:
+    assert find_json(text) == expected
+
+
+def test_find_json_without_json_is_an_extraction_error() -> None:
+    with pytest.raises(ExtractionError, match="no JSON"):
+        find_json("I can't read this receipt.")
+
+
+def test_gemma_gets_schema_in_prompt_and_answer_from_last_part() -> None:
+    reasoning = {"text": "I need to read the total..."}
+    answer = {"text": f"```json\n{RECEIPT_JSON}\n```"}
+    api = FakeApi((200, {"candidates": [{"content": {"parts": [reasoning, answer]}}]}))
+    t = FakeTime()
+    gemma = Gemini(model="gemma-4-31b-it", api_key="k", post=api, sleep=t.sleep, clock=t.clock)
+    assert not gemma.structured_output
+    assert gemma.extract(png()).total == Decimal(5000)
+    _, body, _ = api.calls[0]
+    assert "responseSchema" not in body["generationConfig"]
+    assert "JSON Schema" in body["contents"][0]["parts"][1]["text"]
+
+
+def test_gemini_models_keep_enforced_json() -> None:
+    assert gemini(FakeApi()).structured_output

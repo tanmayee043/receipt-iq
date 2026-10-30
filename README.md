@@ -128,19 +128,60 @@ Model choice, checked on a new free-tier account (Oct 2026): `gemini-2.5-flash` 
 accounts, and `gemini-3.8-flash` never answered (a one-word reply hung for 3 minutes). The model
 is pinned rather than an alias like `gemini-flash-latest`, so runs stay comparable.
 
-**Partial result: first 12 of 98 validation receipts.** The free daily quota ran out after
-about 13 requests; the full run is being completed across several days from the cache.
-
-| Metric (same 12 receipts) | Local, prompt v2 | Gemini 3.5 Flash |
-|---|---|---|
-| Total correct | 58.3% | 100.0% |
-| Line items: F1 | 55.8% | 90.9% |
-| Fully correct receipts | 0 of 12 | 9 of 12 |
-| Median latency | 23.7 s | 13.6 s |
+**Partial result so far: 21 of 98 validation receipts** (compared below). The free daily quota
+runs out after about 10–13 requests, so the full run is being completed day by day from the
+cache.
 
 ```bash
 python scripts/evaluate.py gemini        # needs GEMINI_API_KEY; re-run daily to resume
 ```
+
+### Gemma 4 31B (same module, `--model gemma-4-31b-it`)
+
+Google's open-weights model on the same API key, with a far larger free quota than Gemini, so
+it covered all 98 receipts. Two differences from Gemini, both found by running it:
+
+- **No enforced JSON.** Gemma answers a `responseSchema` with HTTP 500, so it gets the schema in
+  the prompt instead, and the JSON is pulled out of its reply (it reasons first; the answer is the
+  last part). The cost: 3 replies were invalid (2 items with an empty name, 1 broken JSON).
+- **An overloaded free service.** Over two days it returned 503 "high demand", dropped
+  connections and 500s. Only a 500 that survives every retry counts against the receipt, and 3 in
+  a row count as an outage that stops the run (resumed later from the cache). The first run
+  recorded 15 receipts as 500 failures; retried the next day, 8 of them worked, so they had been
+  overload, not bad images. 7 still failed after the retry and stay scored as failures.
+
+**CORD validation split, all 98 receipts:**
+
+| Metric | Local, prompt v2 | Gemma 4 31B |
+|---|---|---|
+| Total correct | 35.7% | 89.8% |
+| Subtotal / tax correct | 25.6% / 13.2% | 87.7% / 89.1% |
+| Line items: precision / recall / F1 | 31.6% / 26.7% / 29.0% | 95.9% / 89.7% / 92.7% |
+| Fully correct receipts | 3.1% | 80.6% |
+| Failed (no usable output) | 1.0% | 10.2% (7 server errors, 3 invalid) |
+| Validator catch rate / false alarms | 42.1% / 0.0% | 63.2% / 1.3% |
+| Median latency | 23.0 s | 110.5 s |
+
+Of the 91 receipts Gemma answered, 79 (87%) were fully correct.
+
+### All three on the same 21 receipts
+
+| Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B |
+|---|---|---|---|
+| Total correct | 47.6% | 95.2% | 85.7% |
+| Line items: F1 | 41.1% | 93.3% | 91.7% |
+| Fully correct receipts | 1 of 21 | 17 of 21 | 16 of 21 |
+| Failed | 0 | 1 | 3 |
+| Median latency | 23.1 s | 14.8 s | 94.5 s |
+
+What the numbers show:
+
+- **Reading the image beats OCR + a small model** by a wide margin: no prompt fixes text that OCR
+  never read.
+- **Gemma is close to Gemini on accuracy** but about 6× slower, and its failures come mostly from
+  the free service, not from reading the receipt.
+- **The same mistake from both cloud models:** an item with an empty name. A next prompt version
+  should require the printed name on every item (kept for later so these runs stay comparable).
 
 ## Run it
 
