@@ -1,9 +1,11 @@
 """Score an extraction provider against a labeled CORD split.
 
-Usage: python scripts/evaluate.py {oracle,noisy,local,gemini} [split] [--limit N]
+Usage: python scripts/evaluate.py {oracle,noisy,local,gemini,azure} [split] [--limit N]
 
 - local:  Tesseract OCR + phi3 via Ollama, fully on this machine.
 - gemini: Gemini reads the image directly (free tier; needs GEMINI_API_KEY).
+- azure:  Azure Document Intelligence's prebuilt receipt model (free tier; needs
+  AZURE_DI_ENDPOINT and AZURE_DI_KEY).
   Real providers' results are cached in data/cache/, so re-runs and
   interrupted runs (e.g. a used-up daily quota) don't redo work.
 - oracle: returns the answer itself. Everything must score 100%; anything less
@@ -22,6 +24,7 @@ from pathlib import Path
 from receipt_iq.cache import CachedExtractor
 from receipt_iq.cord import CordExample, load_split
 from receipt_iq.evaluation import EvalReport, Extractor, TemporaryError, evaluate
+from receipt_iq.providers.azure_di import AzureDocumentIntelligence
 from receipt_iq.providers.gemini import DEFAULT_MODEL, Gemini
 from receipt_iq.providers.local import TesseractOllama
 from receipt_iq.schema import LineItem, Receipt
@@ -104,7 +107,7 @@ def print_report(provider: str, report: EvalReport) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("provider", choices=["oracle", "noisy", "local", "gemini"])
+    parser.add_argument("provider", choices=["oracle", "noisy", "local", "gemini", "azure"])
     parser.add_argument("split", nargs="?", default="data/cord/validation.parquet")
     parser.add_argument("--limit", type=int, help="only the first N receipts")
     parser.add_argument("--prompt", default="v2", help="local provider prompt version")
@@ -122,11 +125,13 @@ def main() -> None:
     elif args.provider == "noisy":
         extractor = Noisy(answers)
     else:
-        provider: TesseractOllama | Gemini = (
-            TesseractOllama(prompt_version=args.prompt)
-            if args.provider == "local"
-            else Gemini(model=args.model)
-        )
+        provider: TesseractOllama | Gemini | AzureDocumentIntelligence
+        if args.provider == "local":
+            provider = TesseractOllama(prompt_version=args.prompt)
+        elif args.provider == "gemini":
+            provider = Gemini(model=args.model)
+        else:
+            provider = AzureDocumentIntelligence()
         extractor = cached = CachedExtractor(provider, provider.version, CACHE_ROOT)
 
     try:

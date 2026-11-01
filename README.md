@@ -53,7 +53,7 @@ python scripts/check_cord_labels.py data/cord/validation.parquet
 
 Split usage: prompts get tuned on the **validation** split; final scores are reported on **test**.
 
-No real provider is wired in yet. To prove the harness, `scripts/evaluate.py` has two
+To prove the harness, `scripts/evaluate.py` has two
 simulated ones: `oracle` (returns the answer; scores 100%) and `noisy` (the answer with
 injected OCR-style mistakes). On the noisy run the harness exposed a validator bug: a receipt
 with **every item missed** passed, because the item check was skipped when there were no items.
@@ -128,12 +128,12 @@ Model choice, checked on a new free-tier account (Oct 2026): `gemini-2.5-flash` 
 accounts, and `gemini-3.8-flash` never answered (a one-word reply hung for 3 minutes). The model
 is pinned rather than an alias like `gemini-flash-latest`, so runs stay comparable.
 
-**Partial result so far: 21 of 98 validation receipts** (compared below). The free daily quota
-runs out after about 10–13 requests, so the full run is being completed day by day from the
-cache.
+**Partial result so far: 57 of 98 validation receipts** (compared below). The free daily quota
+has ranged from 9 to 21 requests, so the full run is being completed day by day from the cache.
 
 ```bash
 python scripts/evaluate.py gemini        # needs GEMINI_API_KEY; re-run daily to resume
+python scripts/evaluate.py azure         # needs AZURE_DI_ENDPOINT and AZURE_DI_KEY
 ```
 
 ### Gemma 4 31B (same module, `--model gemma-4-31b-it`)
@@ -147,8 +147,9 @@ it covered all 98 receipts. Two differences from Gemini, both found by running i
 - **An overloaded free service.** Over two days it returned 503 "high demand", dropped
   connections and 500s. Only a 500 that survives every retry counts against the receipt, and 3 in
   a row count as an outage that stops the run (resumed later from the cache). The first run
-  recorded 15 receipts as 500 failures; retried the next day, 8 of them worked, so they had been
-  overload, not bad images. 7 still failed after the retry and stay scored as failures.
+  recorded 15 receipts as 500 failures. Those were retried the next day, together with one receipt
+  that had never been reached: 7 of the 16 still failed and stay scored as failures, so most of
+  the first-run failures had been overload, not bad images.
 
 **CORD validation split, all 98 receipts:**
 
@@ -164,24 +165,70 @@ it covered all 98 receipts. Two differences from Gemini, both found by running i
 
 Of the 91 receipts Gemma answered, 79 (87%) were fully correct.
 
-### All three on the same 21 receipts
+### Azure Document Intelligence (`providers/azure_di.py`)
 
-| Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B |
+Microsoft's prebuilt receipt model: no prompt and no LLM. Free tier (500 pages a month, 4 MB per
+file), so calls are spaced 3 s apart, larger images are re-encoded to fit, and used-up monthly
+pages stop the run cleanly.
+
+```
+image ──► POST analyze ──► poll until done ──► map fields ──► Receipt
+```
+
+Running it on real receipts found problems in how its reply has to be read:
+
+- **Locale.** By default a printed "8.000" came back as 8.0. The item and total were both wrong in
+  the same way, so the arithmetic still added up and the validator passed it. `locale=id-ID` fixes
+  amounts and totals.
+- **Unit prices.** Even with the locale, a line's `Price` of "20.000" came back as 20.0 next to a
+  correct `TotalPrice`. This caused all 14 false alarms in the first full run, so unit prices are
+  now read from the printed text.
+- **Service charge.** There's no such field; it reports them as `Tip`. CORD has no tips, so `Tip`
+  maps to `service_charge`. With both fixes, fully correct went from 57.1% to 61.2% and false
+  alarms from 25.0% to 0.0%.
+
+**CORD validation split, all 98 receipts:**
+
+| Metric | Local, prompt v2 | Gemma 4 31B | Azure |
 |---|---|---|---|
-| Total correct | 47.6% | 95.2% | 85.7% |
-| Line items: F1 | 41.1% | 93.3% | 91.7% |
-| Fully correct receipts | 1 of 21 | 17 of 21 | 16 of 21 |
-| Failed | 0 | 1 | 3 |
-| Median latency | 23.1 s | 14.8 s | 94.5 s |
+| Total correct | 35.7% | 89.8% | 91.8% |
+| Subtotal / tax correct | 25.6% / 13.2% | 87.7% / 89.1% | 89.6% / 60.9% |
+| Line items: precision / recall / F1 | 31.6% / 26.7% / 29.0% | 95.9% / 89.7% / 92.7% | 93.0% / 85.8% / 89.2% |
+| Fully correct receipts | 3.1% | 80.6% | 61.2% |
+| Failed (no usable output) | 1.0% | 10.2% | 5.1% (no total found) |
+| Validator catch rate / false alarms | 42.1% / 0.0% | 63.2% / 1.3% | 71.1% / 0.0% |
+| Median latency | 23.0 s | 110.5 s | 9.0 s (includes the 3 s call spacing) |
+
+Azure reads totals and items about as well as Gemma, but fully correct is lower because of fields
+it doesn't return: it has no receipt-level discount field (5 receipts) and left tax blank on 14,
+often where a tax is printed. The scorer is strict here: 6 of the wrong receipts include a field
+labeled 0 that Azure left blank. The 5 failures returned no total; 3 of them were among the 14
+photos over 4 MB, which may be down to shrinking or to those photos being harder to read.
+
+### All four on the same 57 receipts
+
+| Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B | Azure |
+|---|---|---|---|---|
+| Total correct | 40.4% | 98.2% | 91.2% | 89.5% |
+| Line items: F1 | 31.7% | 95.0% | 92.0% | 88.6% |
+| Fully correct receipts | 3 of 57 | 48 of 57 | 45 of 57 | 38 of 57 |
+| Failed | 1 | 1 | 5 | 3 |
+| Validator catch rate | 42.6% | 33.3% | 50.0% | 73.7% |
+| Median latency | 24.7 s | 11.6 s | 102.8 s | 9.0 s |
 
 What the numbers show:
 
 - **Reading the image beats OCR + a small model** by a wide margin: no prompt fixes text that OCR
   never read.
-- **Gemma is close to Gemini on accuracy** but about 6× slower, and its failures come mostly from
-  the free service, not from reading the receipt.
-- **The same mistake from both cloud models:** an item with an empty name. A next prompt version
+- **Gemini is the most accurate so far; Azure is the fastest.** Gemma is close to Gemini on
+  accuracy but about 9× slower, and most of its failures come from the free service, not from
+  reading the receipt.
+- **The same mistake from both Google models:** an item with an empty name. A next prompt version
   should require the printed name on every item (kept for later so these runs stay comparable).
+- **A low catch rate isn't always a weak validator.** On Gemini, none of the 6 wrong receipts it
+  missed has a wrong amount: they differ in item names, a blank subtotal or extra 0-priced lines,
+  which arithmetic can't see. Azure's "8.000" bug is the opposite warning: wrong amounts that are
+  consistent with each other pass too.
 
 ## Run it
 
