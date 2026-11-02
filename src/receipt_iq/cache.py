@@ -32,7 +32,7 @@ class CachedExtractor:
         self.misses = 0
 
     def extract(self, image: bytes) -> Receipt:
-        path = self.directory / f"{hashlib.sha256(image).hexdigest()}.json"
+        path = cache_path(self, image)
         if path.exists():
             self.hits += 1
             entry = json.loads(path.read_text(encoding="utf-8"))
@@ -61,6 +61,10 @@ class CachedExtractor:
         except ExtractionError as failure:
             receipt, error = None, str(failure)
         return {"receipt": receipt, "error": error, "seconds": time.perf_counter() - start}
+
+
+def cache_path(extractor: CachedExtractor, image: bytes) -> Path:
+    return extractor.directory / f"{hashlib.sha256(image).hexdigest()}.json"
 
 
 def _safe(part: str) -> str:

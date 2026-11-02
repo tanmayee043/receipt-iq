@@ -21,6 +21,8 @@ crashed worker's receipt is delivered again rather than lost.
 
 The queue holds only the hash: a 10 MB photo doesn't belong in a message broker.
 
+With provider "auto", the router (router.py) chooses for each receipt and records why.
+
 Start Redis with `docker compose up -d` and a worker with:
     celery -A receipt_iq.tasks worker --pool=solo --loglevel=info
 
@@ -33,6 +35,7 @@ import hashlib
 import json
 import os
 from collections.abc import Callable
+from dataclasses import asdict
 from decimal import Decimal
 from functools import cache
 from pathlib import Path
@@ -48,10 +51,13 @@ from receipt_iq.providers.azure_di import AzureDocumentIntelligence
 from receipt_iq.providers.azure_openai import AzureOpenAI
 from receipt_iq.providers.gemini import Gemini
 from receipt_iq.providers.local import TesseractOllama
+from receipt_iq.router import Routed, Router, load_routes
 from receipt_iq.validation import validate
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 TOLERANCE = Decimal(100)  # IDR, as in scripts/evaluate.py
+AUTO = "auto"  # let the router choose the provider
+LEADERBOARD = Path("leaderboard.json")
 MAX_RETRIES = 5
 RETRY_BASE_SECONDS = 60  # 1, 2, 4, 8, then 16 minutes
 # How long Redis waits before handing a crashed worker's receipt to another worker. Has
@@ -81,6 +87,7 @@ class Provider(Extractor, Protocol):
 PROVIDERS: dict[str, Callable[[], Provider]] = {
     "local": TesseractOllama,
     "gemini": Gemini,
+    "gemma": lambda: Gemini(model="gemma-4-31b-it"),
     "azure": AzureDocumentIntelligence,
     "gpt": AzureOpenAI,
 }
@@ -103,12 +110,19 @@ def store_image(image: bytes) -> str:
     return digest
 
 
-def submit(image: bytes, provider: str) -> AsyncResult:
-    """Queue a receipt for extraction. Returns at once; `.get()` waits for the result."""
-    if provider not in PROVIDERS:
+def submit(image: bytes, provider: str = AUTO, local_only: bool = False) -> AsyncResult:
+    """Queue a receipt for extraction. Returns at once; `.get()` waits for the result.
+
+    `provider` is "auto" to let the router choose, or a name from PROVIDERS. `local_only`
+    is for sensitive documents: the router won't use anything that leaves this machine.
+    """
+    if provider != AUTO and provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; choose from {sorted(PROVIDERS)}")
+    if local_only and provider != AUTO:
+        raise ValueError("local_only only applies when the router chooses the provider")
     digest = store_image(image)
-    return extract_receipt.apply_async((digest, provider), task_id=f"{provider}-{digest}")
+    task_id = f"{provider}{'-local' if local_only else ''}-{digest}"
+    return extract_receipt.apply_async((digest, provider, local_only), task_id=task_id)
 
 
 @cache
@@ -117,6 +131,12 @@ def get_extractor(provider: str) -> CachedExtractor:
     # that spacing only works if every task shares the same object.
     inner = PROVIDERS[provider]()
     return CachedExtractor(inner, inner.version, _data_root() / "cache")
+
+
+@cache
+def get_router() -> Router:
+    # One per worker process, so circuit breakers remember failures across receipts.
+    return Router(load_routes(LEADERBOARD), get_extractor)
 
 
 def _dead_letter_path(digest: str, provider: str) -> Path:
@@ -145,11 +165,18 @@ def _dead_letter(digest: str, provider: str, kind: str, reason: str) -> dict[str
     reject_on_worker_lost=True,
     max_retries=MAX_RETRIES,
 )
-def extract_receipt(self: Any, digest: str, provider: str) -> dict[str, Any]:
+def extract_receipt(
+    self: Any, digest: str, provider: str, local_only: bool = False
+) -> dict[str, Any]:
     image = (_data_root() / "uploads" / digest).read_bytes()
-    extractor = get_extractor(provider)
+    routed: Routed | None = None
     try:
-        receipt = extractor.extract(image)
+        if provider == AUTO:
+            routed = get_router().extract(image, local_only)
+            receipt = routed.receipt
+        else:
+            extractor = get_extractor(provider)
+            receipt = extractor.extract(image)
     except (TemporaryError, SoftTimeLimitExceeded) as failure:
         retries = self.request.retries
         if retries >= MAX_RETRIES:
@@ -165,8 +192,15 @@ def extract_receipt(self: Any, digest: str, provider: str) -> dict[str, Any]:
     return {
         "status": "passed" if checked.passed else "needs_review",
         "digest": digest,
-        "provider": provider,
+        "provider": routed.provider if routed else provider,
         "receipt": receipt.model_dump(mode="json"),
         "issues": [issue.message for issue in checked.issues],
-        "seconds": extractor.last_seconds,
+        "seconds": (
+            sum(attempt.seconds for attempt in routed.attempts)
+            if routed
+            else extractor.last_seconds
+        ),
+        # The routing log: which providers were tried, and why this one answered.
+        "attempts": [asdict(attempt) for attempt in routed.attempts] if routed else [],
+        "met_target": routed.met_target if routed else None,
     }

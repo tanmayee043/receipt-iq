@@ -1,0 +1,71 @@
+{
+  "split": "validation",
+  "receipts": 73,
+  "providers": [
+    {
+      "provider": "local",
+      "local": true,
+      "fully_correct": 0.0410958904109589,
+      "total_correct": 0.3561643835616438,
+      "item_f1": 0.28938906752411575,
+      "catch_rate": 0.45714285714285713,
+      "false_alarm_rate": 0.0,
+      "failure_rate": 0.0136986301369863,
+      "median_seconds": 23.11571569996886,
+      "cost_per_1000": 0.0,
+      "cost_note": "runs on this machine; electricity not counted"
+    },
+    {
+      "provider": "gemini",
+      "local": false,
+      "fully_correct": 0.863013698630137,
+      "total_correct": 0.9863013698630136,
+      "item_f1": 0.9464788732394367,
+      "catch_rate": 0.3,
+      "false_alarm_rate": 0.0,
+      "failure_rate": 0.0136986301369863,
+      "median_seconds": 11.597271299920976,
+      "cost_per_1000": 5.4,
+      "cost_note": "estimate: $1.50 / $9.00 per million tokens, assuming GPT's token counts per receipt"
+    },
+    {
+      "provider": "gemma",
+      "local": false,
+      "fully_correct": 0.7945205479452054,
+      "total_correct": 0.8904109589041096,
+      "item_f1": 0.9171597633136095,
+      "catch_rate": 0.6,
+      "false_alarm_rate": 0.0,
+      "failure_rate": 0.1095890410958904,
+      "median_seconds": 110.96504849998746,
+      "cost_per_1000": 0.0,
+      "cost_note": "free tier only: no paid price found, and it's slow and often overloaded"
+    },
+    {
+      "provider": "azure",
+      "local": false,
+      "fully_correct": 0.6575342465753424,
+      "total_correct": 0.8904109589041096,
+      "item_f1": 0.8934911242603549,
+      "catch_rate": 0.8,
+      "false_alarm_rate": 0.0,
+      "failure_rate": 0.0684931506849315,
+      "median_seconds": 8.955948600079864,
+      "cost_per_1000": 10.0,
+      "cost_note": "$10 per 1,000 pages; the free tier covers the first 500 a month"
+    },
+    {
+      "provider": "gpt",
+      "local": false,
+      "fully_correct": 0.7808219178082192,
+      "total_correct": 0.9452054794520548,
+      "item_f1": 0.8783382789317508,
+      "catch_rate": 0.4375,
+      "false_alarm_rate": 0.0,
+      "failure_rate": 0.0410958904109589,
+      "median_seconds": 8.330844199983403,
+      "cost_per_1000": 1.11,
+      "cost_note": "measured tokens per receipt at $0.25 / $2.00 per million"
+    }
+  ]
+}
