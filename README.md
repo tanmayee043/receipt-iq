@@ -134,6 +134,7 @@ has ranged from 9 to 21 requests, so the full run is being completed day by day 
 ```bash
 python scripts/evaluate.py gemini        # needs GEMINI_API_KEY; re-run daily to resume
 python scripts/evaluate.py azure         # needs AZURE_DI_ENDPOINT and AZURE_DI_KEY
+python scripts/evaluate.py gpt           # needs AZURE_OPENAI_ENDPOINT, _KEY and _DEPLOYMENT
 ```
 
 ### Gemma 4 31B (same module, `--model gemma-4-31b-it`)
@@ -205,25 +206,58 @@ often where a tax is printed. The scorer is strict here: 6 of the wrong receipts
 labeled 0 that Azure left blank. The 5 failures returned no total; 3 of them were among the 14
 photos over 4 MB, which may be down to shrinking or to those photos being harder to read.
 
-### All four on the same 57 receipts
+### GPT-5 mini on Azure OpenAI (`providers/azure_openai.py`)
 
-| Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B | Azure |
-|---|---|---|---|---|
-| Total correct | 40.4% | 98.2% | 91.2% | 89.5% |
-| Line items: F1 | 31.7% | 95.0% | 92.0% | 88.6% |
-| Fully correct receipts | 3 of 57 | 48 of 57 | 45 of 57 | 38 of 57 |
-| Failed | 1 | 1 | 5 | 3 |
-| Validator catch rate | 42.6% | 33.3% | 50.0% | 73.7% |
-| Median latency | 24.7 s | 11.6 s | 102.8 s | 9.0 s |
+Reads the image directly, with the same prompt as Gemini and strict JSON output. This is the one
+provider that spends credit rather than a free tier: about $0.11 for all 98 receipts (roughly
+155,000 tokens, at third-party-listed rates), so about $0.001 per receipt.
+
+```
+image ──► chat completions (strict JSON schema) ──► Receipt
+```
+
+Model choice, checked on an Azure for Students subscription (Nov 2026): `gpt-5.4-mini` has no
+quota, and neither does `gpt-4o-mini` in the allowed region, so it runs `gpt-5-mini` version
+2025-08-07, with automatic version upgrades turned off so runs stay comparable.
+
+**CORD validation split, all 98 receipts:**
+
+| Metric | GPT-5 mini |
+|---|---|
+| Total correct | 92.9% |
+| Subtotal / tax correct | 86.2% / 82.6% |
+| Line items: precision / recall / F1 | 83.8% / 84.9% / 84.4% |
+| Fully correct receipts | 72.4% |
+| Failed (no usable output) | 3.1% |
+| Validator catch rate / false alarms | 37.0% / 0.0% |
+| Median latency | 8.3 s |
+
+- **Strict JSON isn't correct JSON.** All 3 failures matched the JSON schema but broke the
+  `Receipt` rules: a negative price, an empty name and a quantity of 0. The schema can't express
+  those limits; Pydantic caught them.
+- **It can misread thousands too.** Two receipts came back as 172 for 172000 and 69 for 69000,
+  despite the prompt's number rules. The amounts still added up, so the validator passed them,
+  the same blind spot as Azure's "8.000".
+
+### All five on the same 57 receipts
+
+| Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B | Azure | GPT-5 mini |
+|---|---|---|---|---|---|
+| Total correct | 40.4% | 98.2% | 91.2% | 89.5% | 94.7% |
+| Line items: F1 | 31.7% | 95.0% | 92.0% | 88.6% | 86.3% |
+| Fully correct receipts | 3 of 57 | 48 of 57 | 45 of 57 | 38 of 57 | 43 of 57 |
+| Failed | 1 | 1 | 5 | 3 | 3 |
+| Validator catch rate | 42.6% | 33.3% | 50.0% | 73.7% | 50.0% |
+| Median latency | 24.7 s | 11.6 s | 102.8 s | 9.0 s | 8.6 s |
 
 What the numbers show:
 
 - **Reading the image beats OCR + a small model** by a wide margin: no prompt fixes text that OCR
   never read.
-- **Gemini is the most accurate so far; Azure is the fastest.** Gemma is close to Gemini on
-  accuracy but about 9× slower, and most of its failures come from the free service, not from
+- **Gemini is the most accurate so far; GPT and Azure are the fastest.** Gemma is close to Gemini
+  on accuracy but about 9× slower, and most of its failures come from the free service, not from
   reading the receipt.
-- **The same mistake from both Google models:** an item with an empty name. A next prompt version
+- **The same mistake from Gemini, Gemma and GPT:** an item with an empty name. A next prompt version
   should require the printed name on every item (kept for later so these runs stay comparable).
 - **A low catch rate isn't always a weak validator.** On Gemini, none of the 6 wrong receipts it
   missed has a wrong amount: they differ in item names, a blank subtotal or extra 0-priced lines,
