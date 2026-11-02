@@ -264,6 +264,54 @@ What the numbers show:
   which arithmetic can't see. Azure's "8.000" bug is the opposite warning: wrong amounts that are
   consistent with each other pass too.
 
+## Task queue (`tasks.py`)
+
+Each receipt is one Celery task, with Redis as the broker, so an upload can return straight away
+and the extraction runs in the background.
+
+```
+submit(image) ──► data/uploads/<hash> ──► Redis ──► worker ──► provider (through the cache)
+                                                                   │
+                                 passed / needs_review ◄── validate ┤
+                                                                    └──► dead letter
+```
+
+| What happened | What the task does | Why |
+|---|---|---|
+| Valid receipt, arithmetic checks out | `passed` | |
+| Valid receipt, arithmetic fails or can't be checked | `needs_review` | Feeds the review queue |
+| `TemporaryError` (quota, overload, network) | Retries after 1, 2, 4, 8, then 16 min, then dead-letters without caching | Says nothing about the receipt, so it can be submitted again later |
+| `ExtractionError` (provider can't read it) | Dead-letters immediately | Retrying spends money on the same answer |
+| `RuntimeError` (wrong key, retired model) | Fails the task visibly | Every receipt would hit it, and only a person can fix it |
+
+- **Safe to run twice.** The task id comes from the provider and image hash, and results go
+  through the disk cache, so a repeat costs nothing.
+- **Survives a crash.** A task only leaves Redis once it has finished (`acks_late`).
+- **Only the hash is queued.** A 10 MB photo doesn't belong in a message broker.
+
+**Checked for real with Redis and a worker, not only in tests:**
+
+| Test | Result |
+|---|---|
+| Queue 3 receipts with no worker, then start one | They waited in Redis, then completed |
+| Kill a worker with `Stop-Process -Force` mid-call | Redis still held the receipt; a second worker finished it, leaving 1 cache entry |
+| Point a worker at a closed port | Real failures retried after 60 s, then 120 s; nothing cached or dead-lettered |
+
+Two limits worth knowing:
+
+- **A crashed receipt comes back slowly.** Redis re-delivers it only after the visibility timeout,
+  1 hour by default (the crash test set `CELERY_VISIBILITY_TIMEOUT=30`). It has to outlast the
+  longest task and retry wait, or a healthy task gets delivered twice.
+- **`--pool=solo` doesn't enforce Celery's time limits.** It's what works on Windows, and running
+  one task at a time suits the rate limits, but here each provider's own request timeout is what
+  bounds a task. The time limits apply on Linux with the prefork pool. They weren't tested here.
+
+```bash
+docker compose up -d                                              # Redis, this machine only
+celery -A receipt_iq.tasks worker --pool=solo --loglevel=info     # in a second terminal
+python scripts/submit_receipts.py gpt --limit 3
+```
+
 ## Run it
 
 ```bash

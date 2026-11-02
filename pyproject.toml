@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2.7,<3",
     "pyarrow>=16",
     "pillow>=10.4",
+    "celery>=5.4,<6",
+    "redis>=5,<7",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +41,15 @@ plugins = ["pydantic.mypy"]
 # pyarrow ships no type hints
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# celery and kombu ship no type hints, so @app.task can't be typed
+module = ["celery", "celery.*", "kombu", "kombu.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["receipt_iq.tasks"]
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
