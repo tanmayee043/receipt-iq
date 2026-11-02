@@ -20,7 +20,6 @@ a request header, never in the URL, so it can't end up in logs.
 
 import base64
 import http.client
-import io
 import json
 import os
 import re
@@ -30,11 +29,10 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
-from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 
 from receipt_iq.evaluation import ExtractionError, TemporaryError
-from receipt_iq.providers.shared import RESPONSE_SCHEMA
+from receipt_iq.providers.shared import RESPONSE_SCHEMA, VISION_PROMPT, mime_type
 from receipt_iq.schema import Receipt
 
 PROMPT_VERSION = "v1"
@@ -46,31 +44,6 @@ DEFAULT_MODEL = "gemini-3.5-flash"
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 # Receipts in a row with a persistent server error before it counts as an outage.
 OUTAGE_AFTER = 3
-
-PROMPT = """\
-Copy the data printed on this shop receipt into JSON. Copy what is printed;
-never calculate or invent anything.
-
-Items:
-- One entry per purchased line, with the name copied as printed.
-- "total_price" is the amount printed on that line. "quantity" is the count
-  printed for it, default 1. A discount printed under an item goes in that
-  item's "discount".
-
-Receipt-level amounts, found by the label printed next to them:
-- "subtotal": SUBTOTAL, SUB TOTAL, JUMLAH
-- "tax": TAX, PB1, PPN, VAT
-- "service_charge": SERVICE, SVC, SC
-- "discount": DISC, DISKON, DISCOUNT (below the subtotal)
-- "total": the amount on the TOTAL line, copied exactly
-Use null for an amount whose label isn't printed.
-
-Number format:
-- "." and "," are thousands separators: "24.000" and "24,000" are 24000.
-- Discounts are positive numbers, even when printed as "-3.000".
-
-Ignore cash (TUNAI, CASH), change (KEMBALI, CHANGE) and card payment lines.
-"""
 
 
 def to_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -91,14 +64,6 @@ def to_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
         else:
             converted[key] = value
     return converted
-
-
-def _mime_type(image: bytes) -> str:
-    try:
-        picture = Image.open(io.BytesIO(image))
-    except UnidentifiedImageError as failure:
-        raise ExtractionError("not a readable image") from failure
-    return Image.MIME.get(picture.format or "", "image/png")
 
 
 Response = tuple[int, dict[str, Any]]
@@ -189,7 +154,7 @@ class Gemini:
 
     def extract(self, image: bytes) -> Receipt:
         config: dict[str, Any] = {"temperature": 0}
-        prompt = PROMPT
+        prompt = VISION_PROMPT
         if self.structured_output:
             config["responseMimeType"] = "application/json"
             config["responseSchema"] = to_gemini_schema(RESPONSE_SCHEMA)
@@ -203,7 +168,7 @@ class Gemini:
                     "parts": [
                         {
                             "inline_data": {
-                                "mime_type": _mime_type(image),
+                                "mime_type": mime_type(image),
                                 "data": base64.b64encode(image).decode(),
                             }
                         },
