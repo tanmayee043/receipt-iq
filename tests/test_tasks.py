@@ -10,6 +10,7 @@ import pytest
 
 from receipt_iq import tasks
 from receipt_iq.evaluation import ExtractionError, TemporaryError
+from receipt_iq.router import Route
 from receipt_iq.schema import LineItem, Receipt
 
 IMAGE = b"receipt image bytes"
@@ -149,3 +150,24 @@ def test_tasks_stay_queued_until_finished() -> None:
     # What makes a crashed worker's receipt come back instead of disappearing.
     assert tasks.extract_receipt.acks_late is True
     assert tasks.extract_receipt.reject_on_worker_lost is True
+
+
+def test_auto_lets_the_router_choose_and_keeps_the_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(tasks.PROVIDERS, "fake", FakeProvider(TemporaryError("429")))
+    monkeypatch.setitem(tasks.PROVIDERS, "backup", FakeProvider(GOOD))
+    routes = [Route("fake", 0.9, 0.0, 1.0), Route("backup", 0.8, 1.0, 1.0)]
+    monkeypatch.setattr(tasks, "load_routes", lambda path: routes)
+    tasks.get_router.cache_clear()
+
+    result = tasks.submit(IMAGE).get()
+
+    assert result["status"] == "passed"
+    assert result["provider"] == "backup"
+    assert result["met_target"] is True
+    assert [a["outcome"] for a in result["attempts"]] == ["unavailable", "passed"]
+    tasks.get_router.cache_clear()
+
+
+def test_local_only_requires_the_router() -> None:
+    with pytest.raises(ValueError, match="local_only"):
+        tasks.submit(IMAGE, "gpt", local_only=True)

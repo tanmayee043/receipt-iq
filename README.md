@@ -128,7 +128,7 @@ Model choice, checked on a new free-tier account (Oct 2026): `gemini-2.5-flash` 
 accounts, and `gemini-3.8-flash` never answered (a one-word reply hung for 3 minutes). The model
 is pinned rather than an alias like `gemini-flash-latest`, so runs stay comparable.
 
-**Partial result so far: 57 of 98 validation receipts** (compared below). The free daily quota
+**Partial result so far: 73 of 98 validation receipts** (the comparison tables below use the first 57). The free daily quota
 has ranged from 9 to 21 requests, so the full run is being completed day by day from the cache.
 
 ```bash
@@ -310,6 +310,67 @@ Two limits worth knowing:
 docker compose up -d                                              # Redis, this machine only
 celery -A receipt_iq.tasks worker --pool=solo --loglevel=info     # in a second terminal
 python scripts/submit_receipts.py gpt --limit 3
+```
+
+## Router (`router.py`)
+
+`submit(image)` now defaults to `provider="auto"`, and the router chooses for each receipt from
+the numbers in `leaderboard.json`, which `scripts/build_leaderboard.py` generates from the cache.
+Providers are only compared on receipts all of them answered.
+
+```
+ranked providers ──► circuit breaker open? skip ──► extract ──► validate ──► passed: done
+                                                       │            │
+                                 unavailable or failed: next    flagged: next, up to 2 answers
+```
+
+- **Policy:** the cheapest provider that reaches 75% fully correct and answers within 60 s. Those
+  that miss either are a last resort, most accurate first.
+- **Circuit breaker:** after 3 failures in a row a provider is skipped for 5 minutes, then gets one
+  trial call. A wrong key opens it immediately.
+- **Sensitive documents:** `local_only=True` never uses anything that leaves the machine.
+- **Routing log:** every result lists each provider tried, what happened and why.
+
+**What routing is worth, replayed on the 73 receipts all providers have answered**
+(`scripts/simulate_routing.py`, no provider calls):
+
+| Policy | Fully correct | Line-item F1 | $ per 1,000 | Sent to review | Mean time |
+|---|---|---|---|---|---|
+| Always Gemini (most accurate) | 86.3% | 94.6% | 5.33 | 4.1% | 16.8 s |
+| Always GPT | 78.1% | 87.8% | 1.06 | 9.6% | 8.4 s |
+| Always Azure | 65.8% | 89.3% | 9.32 | 27.4% | 8.3 s |
+| **Router, 1 answer** | 79.5% | 91.5% | 1.33 | 6.8% | 9.1 s |
+| **Router, second opinion (default)** | 83.6% | 92.6% | 1.63 | 1.4% | 12.9 s |
+
+So far, the default router costs **69% less** than always using Gemini, at the price of 2 of the 73
+receipts no longer being fully correct. It's also faster, and sends fewer receipts to a person.
+
+Read those numbers with care:
+
+- **Not final.** The router's accuracy figures come from these same receipts, so this flatters it.
+  Gemini's run is also unfinished. The final number has to come from the test split.
+- **Costs are list prices from third-party trackers.** GPT's token counts are measured; Gemini's
+  $5.40 assumes the same token counts as GPT, and a different figure changes the saving directly.
+- **The speed limit matters.** Without it, the router sends everything to Gemma first at "$0" and
+  reports 87.7% at $0.20. That's an artifact: Gemma takes about 105 s, has no paid tier we could
+  price, and is often overloaded, so that saving wouldn't exist at real volume.
+- **Differences are small.** One receipt is 1.4 points here.
+
+**Checked for real through Redis and a worker:**
+
+| Test | Result |
+|---|---|
+| 8 receipts, normal routing | GPT answered most; 2 flagged went to Gemini; one then passed validation, and the other was sent to review |
+| Wrong GPT key, empty cache | HTTP 401 moved on to Gemini; on the next receipt the breaker skipped GPT, Gemini was out of quota, and Gemma answered |
+
+One limit: results are stored under the task id, so submitting a receipt again returns the stored
+result until the new run finishes. That's fine for repeats, but after a dead letter from a provider
+outage, the caller could read the old result first.
+
+```bash
+python scripts/build_leaderboard.py      # no provider calls; re-run when results change
+python scripts/simulate_routing.py       # no provider calls
+python scripts/submit_receipts.py auto --limit 5
 ```
 
 ## Run it
