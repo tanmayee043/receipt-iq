@@ -8,10 +8,23 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Tests use a real Postgres, so they also check the migrations.
+    env:
+      DATABASE_URL: postgresql+psycopg://receipt_iq:receipt_iq@127.0.0.1:5432/receipt_iq
+      REDIS_URL: redis://127.0.0.1:6379
+    # Tests use a real Postgres, so they also check the migrations, and a real Redis for
+    # login sessions and rate limits.
     services:
+      redis:
+        image: redis:7.4.12-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17.11-alpine
         env:
           POSTGRES_USER: receipt_iq
           POSTGRES_PASSWORD: receipt_iq

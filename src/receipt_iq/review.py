@@ -15,11 +15,11 @@ up it's refused unless the person confirms it, because some real receipts mispri
 """
 
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,10 @@ from receipt_iq.db import (
     CORRECTED,
     DEAD_LETTER,
     DISMISSED,
+    FAILED,
     NEEDS_REVIEW,
+    PASSED,
+    PROCESSING,
     Document,
 )
 from receipt_iq.schema import Receipt
@@ -35,6 +38,12 @@ from receipt_iq.validation import Issue, validate
 
 TOLERANCE = Decimal(100)  # IDR, as in scripts/evaluate.py
 DEFAULT_QUEUE_LIMIT = 50
+# Longer than the task's retries (31 min) and Redis's redelivery wait (1 hour), so a row
+# still processing after this has lost its task, and uploading again may queue a new one.
+STALE_PROCESSING = timedelta(hours=2)
+
+# Where a page of results ended: (created_at, digest).
+Cursor = tuple[datetime, str]
 
 
 class DocumentNotFound(LookupError):
@@ -58,6 +67,34 @@ def issue_json(issue: Issue) -> dict[str, str]:
     return {key: str(value) for key, value in asdict(issue).items()}
 
 
+def begin_processing(session: Session, digest: str) -> bool:
+    """Note an upload, and return whether a task should be queued for it.
+
+    The same image uploaded twice costs nothing: a receipt with an answer, a person's
+    decision or a live task is left alone. Only a receipt that has no answer and no task
+    running is worth another try.
+    """
+    inserted = session.execute(
+        insert(Document)
+        .values(digest=digest, status=PROCESSING)
+        .on_conflict_do_nothing()
+        .returning(Document.digest)
+    ).first()
+    if inserted is not None:
+        return True
+
+    document = _locked(session, digest)
+    now = datetime.now(UTC)
+    lost_task = document.status == PROCESSING and now - document.updated_at > STALE_PROCESSING
+    if document.status not in (DEAD_LETTER, FAILED) and not lost_task:
+        return False
+    document.status = PROCESSING
+    document.failure_kind = None
+    document.failure_reason = None
+    document.updated_at = now
+    return True
+
+
 def save_result(session: Session, result: dict[str, Any]) -> None:
     """Record what a worker found. Safe to call twice for the same result."""
     digest, status = result["digest"], result["status"]
@@ -67,7 +104,7 @@ def save_result(session: Session, result: dict[str, Any]) -> None:
 
     if document.status in (CORRECTED, DISMISSED):
         return
-    if status == DEAD_LETTER and document.receipt is not None:
+    if status in (DEAD_LETTER, FAILED) and document.receipt is not None:
         return
 
     document.status = status
@@ -85,15 +122,28 @@ def get_document(session: Session, digest: str) -> Document | None:
     return session.get(Document, digest)
 
 
-def review_queue(session: Session, limit: int = DEFAULT_QUEUE_LIMIT) -> list[Document]:
+def review_queue(
+    session: Session, limit: int = DEFAULT_QUEUE_LIMIT, after: Cursor | None = None
+) -> list[Document]:
     """Everything waiting for a person, oldest first."""
-    query = (
-        select(Document)
-        .where(Document.status.in_((NEEDS_REVIEW, DEAD_LETTER)))
-        .order_by(Document.created_at, Document.digest)
-        .limit(limit)
+    query = select(Document).where(Document.status.in_((NEEDS_REVIEW, DEAD_LETTER)))
+    if after is not None:
+        query = query.where(tuple_(Document.created_at, Document.digest) > after)
+    return list(session.scalars(query.order_by(Document.created_at, Document.digest).limit(limit)))
+
+
+def routing_log(
+    session: Session, limit: int = DEFAULT_QUEUE_LIMIT, before: Cursor | None = None
+) -> list[Document]:
+    """Receipts the router handled, newest first."""
+    query = select(Document).where(func.jsonb_array_length(Document.attempts) > 0)
+    if before is not None:
+        query = query.where(tuple_(Document.created_at, Document.digest) < before)
+    return list(
+        session.scalars(
+            query.order_by(Document.created_at.desc(), Document.digest.desc()).limit(limit)
+        )
     )
-    return list(session.scalars(query))
 
 
 def correct(
@@ -103,6 +153,8 @@ def correct(
     document = _locked(session, digest)
     if document.status in (CORRECTED, DISMISSED):
         raise NotReviewable(f"{digest} is already {document.status}")
+    if document.status not in (PASSED, NEEDS_REVIEW, DEAD_LETTER):
+        raise NotReviewable(f"{digest} is {document.status}, so there's nothing to correct yet")
     checked = validate(receipt, TOLERANCE)
     if not checked.passed and not confirm_mismatch:
         raise CorrectionRejected([issue.message for issue in checked.issues])

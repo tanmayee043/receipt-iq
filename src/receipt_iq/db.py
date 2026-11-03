@@ -7,7 +7,6 @@ Tables change through migrations, not by hand:
     alembic upgrade head
 """
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -30,21 +29,21 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-# Same local-only setup as Redis: docker-compose.yml binds this to this machine. Not
-# "localhost", which tries IPv6 first here and hangs, as the port is only open on IPv4.
-DEFAULT_DATABASE_URL = "postgresql+psycopg://receipt_iq:receipt_iq@127.0.0.1:5432/receipt_iq"
+from receipt_iq.settings import get_settings
+
 CONNECT_TIMEOUT_SECONDS = 5
 
+PROCESSING = "processing"  # uploaded, and the worker hasn't finished
 PASSED = "passed"
 NEEDS_REVIEW = "needs_review"
 DEAD_LETTER = "dead_letter"
+FAILED = "failed"  # a setup problem or bug, so it's for whoever runs this, not a reviewer
 CORRECTED = "corrected"  # a person fixed it
 DISMISSED = "dismissed"  # a person decided there's nothing to extract
-STATUSES = (PASSED, NEEDS_REVIEW, DEAD_LETTER, CORRECTED, DISMISSED)
 
 
 def database_url() -> str:
-    return os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+    return get_settings().database_url
 
 
 @cache
@@ -72,9 +71,12 @@ class Base(DeclarativeBase):
 
 class Document(Base):
     __tablename__ = "documents"
+    # Reads updated_at back on every save, so it can still be used once the session closes.
+    __mapper_args__ = {"eager_defaults": True}
     __table_args__ = (
         CheckConstraint(
-            "status IN ('passed', 'needs_review', 'dead_letter', 'corrected', 'dismissed')",
+            "status IN ('processing', 'passed', 'needs_review', 'dead_letter', 'failed', "
+            "'corrected', 'dismissed')",
             name="ck_documents_status",
         ),
         # The review queue's query: everything waiting, oldest first.

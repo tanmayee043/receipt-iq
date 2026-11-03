@@ -1,5 +1,6 @@
 """Review queue tests, against a real Postgres (see conftest.py)."""
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import Event, Thread
 from typing import Any
@@ -13,16 +14,20 @@ from receipt_iq.db import (
     CORRECTED,
     DEAD_LETTER,
     DISMISSED,
+    FAILED,
     NEEDS_REVIEW,
     PASSED,
+    PROCESSING,
     Base,
     get_engine,
     session_scope,
 )
 from receipt_iq.review import (
+    STALE_PROCESSING,
     CorrectionRejected,
     DocumentNotFound,
     NotReviewable,
+    begin_processing,
     correct,
     corrections,
     dismiss,
@@ -181,6 +186,45 @@ def test_dead_letter_can_be_corrected_with_no_model_answer(session: Session) -> 
 def test_passed_receipt_can_be_corrected_because_passing_is_not_proof(session: Session) -> None:
     save_result(session, answer(status=PASSED))
     assert correct(session, "a", FIXED).status == CORRECTED
+
+
+def test_new_upload_queues_and_a_known_one_does_not(session: Session) -> None:
+    assert begin_processing(session, "a") is True
+    assert status_of(session) == PROCESSING
+    assert begin_processing(session, "a") is False
+    save_result(session, answer(status=PASSED))
+    assert begin_processing(session, "a") is False
+    assert status_of(session) == PASSED
+
+
+@pytest.mark.parametrize("result", [failure(), {**failure(), "status": FAILED}])
+def test_upload_after_a_failure_tries_again(session: Session, result: dict[str, Any]) -> None:
+    save_result(session, result)
+    assert begin_processing(session, "a") is True
+    document = get_document(session, "a")
+    assert document is not None
+    assert (document.status, document.failure_reason) == (PROCESSING, None)
+
+
+def test_upload_never_reopens_a_persons_decision(session: Session) -> None:
+    save_result(session, answer("fixed"))
+    correct(session, "fixed", FIXED)
+    save_result(session, failure("gone"))
+    dismiss(session, "gone", "not a receipt")
+    assert begin_processing(session, "fixed") is False
+    assert begin_processing(session, "gone") is False
+    assert status_of(session, "fixed") == CORRECTED
+    assert status_of(session, "gone") == DISMISSED
+
+
+def test_processing_row_with_a_lost_task_can_be_queued_again(session: Session) -> None:
+    assert begin_processing(session, "a") is True
+    document = get_document(session, "a")
+    assert document is not None
+    document.updated_at = datetime.now(UTC) - STALE_PROCESSING - timedelta(minutes=1)
+    session.flush()
+    assert begin_processing(session, "a") is True
+    assert begin_processing(session, "a") is False
 
 
 def test_correcting_twice_is_refused(session: Session) -> None:

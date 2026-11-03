@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     # Saved to disk, so queued receipts survive a Redis restart.
     command: redis-server --appendonly yes
     ports:
@@ -10,7 +10,7 @@ services:
       - redis-data:/data
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_USER: receipt_iq
       # A local development password. The port below is only open to this machine.

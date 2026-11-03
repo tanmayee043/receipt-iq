@@ -16,6 +16,11 @@ dependencies = [
     "sqlalchemy>=2,<3",
     "alembic>=1.13,<2",
     "psycopg[binary]>=3.2,<4",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "python-multipart>=0.0.9,<1",
+    "pydantic-settings>=2.4,<3",
+    "argon2-cffi>=23.1,<26",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +28,7 @@ dev = [
     "pytest>=8.2",
     "ruff>=0.6",
     "mypy>=1.11",
+    "httpx>=0.27,<1",
 ]
 
 [tool.setuptools.packages.find]
@@ -53,6 +59,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["receipt_iq.tasks"]
 disallow_untyped_decorators = false
+disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
