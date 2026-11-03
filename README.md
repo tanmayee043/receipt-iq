@@ -429,7 +429,8 @@ python scripts/review_queue.py export
 
 ## API (`api.py`, `security.py`, `settings.py`)
 
-What the screens will call. Interactive docs are at `/docs`.
+What the screens call. Everything is under `/api` except the health checks, so the screens can use
+addresses like `/leaderboard`. Interactive docs are at `/api/docs`.
 
 ```
 upload ──► size, login and rate checks ──► is it really an image? ──► Postgres: processing
@@ -439,15 +440,15 @@ upload ──► size, login and rate checks ──► is it really an image? �
 
 | Endpoint | What it does | Access |
 |---|---|---|
-| `POST /documents` | Upload a receipt and return its hash straight away (202; 200 if already known) | Login |
-| `GET /documents/{digest}` | Status, answer, issues and routing log | Login |
-| `GET /documents/{digest}/image` | The receipt image | Login |
-| `GET /review-queue` | Waiting receipts, oldest first, with cursor pagination | Login |
-| `GET /routing-log` | Which provider handled each receipt and why, newest first | Login |
-| `POST /documents/{digest}/correction` | Save a person's fix | Login |
-| `POST /documents/{digest}/dismissal` | Take a receipt out of the queue | Login |
-| `POST /login`, `POST /logout`, `GET /session` | Owner login | Public, stricter limit on login |
-| `GET /leaderboard` | Accuracy, cost and speed per provider | Public |
+| `POST /api/documents` | Upload a receipt and return its hash straight away (202; 200 if already known) | Login |
+| `GET /api/documents/{digest}` | Status, answer, issues and routing log | Login |
+| `GET /api/documents/{digest}/image` | The receipt image | Login |
+| `GET /api/review-queue` | Waiting receipts, oldest first, with cursor pagination | Login |
+| `GET /api/routing-log` | Which provider handled each receipt and why, newest first | Login |
+| `POST /api/documents/{digest}/correction` | Save a person's fix | Login |
+| `POST /api/documents/{digest}/dismissal` | Take a receipt out of the queue | Login |
+| `POST /api/login`, `POST /api/logout`, `GET /api/session` | Owner login | Public, stricter limit on login |
+| `GET /api/leaderboard` | Accuracy, cost and speed per provider, and the router's order | Public |
 | `GET /healthz`, `GET /readyz` | Running, and able to reach Postgres and Redis | Public, not rate limited |
 
 **Protecting the quota:**
@@ -513,6 +514,47 @@ uvicorn receipt_iq.api:create_app --factory
 ```
 
 For plain-http local testing, set `COOKIE_SECURE=false`.
+
+## Screens (`frontend/`)
+
+React, Vite, TypeScript, Tailwind and TanStack Query, with Recharts for the chart. The design
+decisions are in [`DESIGN.md`](DESIGN.md), and share the crypto dashboard's colors and type.
+
+| Screen | What it answers | Access |
+|---|---|---|
+| Model leaderboard | Which provider should I trust, what does it cost, and which does the router try first? | Public |
+| Routing log | Which provider handled this receipt, what did the others do, and why? | Login |
+
+- **FastAPI serves the built screens.** One address means the `SameSite=Strict` login cookie works
+  with no cross-origin setup. Page addresses get the app; a missing file or API address stays a 404.
+- **The leaderboard says how far to trust it.** It's labeled provisional, an estimated cost says so
+  beside the figure, and the chart's numbers are in the table too.
+- **The chart library loads only on the page that uses it.** It's more than half the download.
+
+**Tested:**
+
+- 40 Playwright runs of 20 tests, at phone and desktop widths with the API mocked: every empty,
+  loading and error state, worst-case long text, sorting, login, logout, keyboard entry and both
+  themes. Each saves screenshots, which CI keeps as an artifact.
+- Real Chromium against the real server, Redis, Postgres and a worker at both widths: real
+  receipts appeared in the log, a wrong password was refused, the session survived a reload, logging
+  out hid the log, and there were no console or Content-Security-Policy errors.
+
+Limits for now:
+
+- **No upload, review or split-bill screens yet.** Those come next.
+- **Fonts come from Google Fonts**, as on the crypto dashboard, rather than being self-hosted.
+- **API types are written by hand** from the response models, so a change has to be made in both.
+- **No Lighthouse score yet.** The plan's accessibility target of 90+ still needs measuring.
+
+```bash
+cd frontend
+npm ci
+npm run dev        # with the API running, proxies /api to it
+npm test           # unit tests
+npm run build      # FastAPI serves this from then on
+npm run test:e2e   # needs the build
+```
 
 ## Run it
 

@@ -12,6 +12,10 @@ proxy's.
 
 Writes are safe to repeat: the same image uploaded twice is one document, and a second
 correction or dismissal is refused rather than applied twice.
+
+Everything is under /api, except the health checks, so the screens can use addresses like
+/leaderboard. The API serves the built screens too: sharing an address means the
+SameSite=Strict login cookie just works, with no cross-origin setup.
 """
 
 import base64
@@ -37,6 +41,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
+from starlette.responses import Response as StarletteResponse
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from receipt_iq.db import FAILED, Document, session_scope
@@ -53,6 +59,7 @@ from receipt_iq.review import (
     routing_log,
     save_result,
 )
+from receipt_iq.router import DEFAULT_MAX_SECONDS, DEFAULT_TARGET, load_routes, qualifies, rank
 from receipt_iq.schema import Receipt
 from receipt_iq.security import (
     create_session,
@@ -171,11 +178,17 @@ class ProviderOut(BaseModel):
     median_seconds: float
     cost_per_1000: float
     cost_note: str
+    # Reaches the accuracy target and speed limit, so the router doesn't keep it as a last resort.
+    meets_policy: bool
 
 
 class LeaderboardOut(BaseModel):
     split: str
     receipts: int
+    accuracy_target: float
+    max_seconds: float
+    # The order the router tries providers in.
+    routing_order: list[str]
     providers: list[ProviderOut]
 
 
@@ -210,8 +223,10 @@ def _require_login(request: Request) -> None:
         raise ApiError(401, "not_logged_in", "Log in first.")
 
 
-public = APIRouter(dependencies=[_rate_limited("general")])
-protected = APIRouter(dependencies=[_rate_limited("general"), Depends(_require_login)])
+public = APIRouter(prefix="/api", dependencies=[_rate_limited("general")])
+protected = APIRouter(
+    prefix="/api", dependencies=[_rate_limited("general"), Depends(_require_login)]
+)
 health = APIRouter(tags=["health"])
 
 
@@ -417,7 +432,18 @@ def read_session(request: Request) -> SessionOut:
 
 @public.get("/leaderboard", response_model=LeaderboardOut)
 def read_leaderboard() -> Any:
-    return json.loads(LEADERBOARD.read_text(encoding="utf-8"))
+    leaderboard = json.loads(LEADERBOARD.read_text(encoding="utf-8"))
+    routes = load_routes(LEADERBOARD)
+    meeting = {r.provider for r in routes if qualifies(r, DEFAULT_TARGET, DEFAULT_MAX_SECONDS)}
+    for provider in leaderboard["providers"]:
+        provider["meets_policy"] = provider["provider"] in meeting
+    order = rank(routes, DEFAULT_TARGET, max_seconds=DEFAULT_MAX_SECONDS)
+    return {
+        **leaderboard,
+        "accuracy_target": DEFAULT_TARGET,
+        "max_seconds": DEFAULT_MAX_SECONDS,
+        "routing_order": [route.provider for route in order],
+    }
 
 
 # Not rate limited: monitoring has to get through, and these must answer when Redis is down.
@@ -485,6 +511,42 @@ class BodyLimit:
         await self.app(scope, counted, send)
 
 
+class Screens(StaticFiles):
+    """The built screens. Any page address gets index.html, and the app shows the right page.
+
+    A missing file (one with an extension) or API address stays a 404, so a broken script
+    link or a mistyped API call doesn't get a web page back.
+    """
+
+    HEADERS = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; "
+            # Inline styles because the chart library positions its elements with them.
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; img-src 'self' data:; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+        ),
+    }
+
+    async def get_response(self, path: str, scope: Scope) -> StarletteResponse:
+        # The address as requested: `path` has had any ".." resolved, and uses backslashes
+        # on Windows, so it can hide that an address was meant for the API.
+        address = scope["path"]
+        if address == "/api" or address.startswith("/api/"):
+            raise HTTPException(404)
+        try:
+            response = await super().get_response(path, scope)
+        except HTTPException as failure:
+            is_file = "." in address.rsplit("/", 1)[-1]
+            if failure.status_code != 404 or is_file:
+                raise
+            response = await super().get_response("index.html", scope)
+        response.headers.update(self.HEADERS)
+        return response
+
+
 def _add_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     def api_error(request: Request, error: ApiError) -> JSONResponse:
@@ -535,7 +597,13 @@ def _add_error_handlers(app: FastAPI) -> None:
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
     """Build the app. A missing or invalid setting stops it here, not on the first request."""
     settings = settings or ApiSettings()
-    app = FastAPI(title="Receipt IQ", version="0.1.0")
+    app = FastAPI(
+        title="Receipt IQ",
+        version="0.1.0",
+        docs_url="/api/docs",
+        redoc_url=None,
+        openapi_url="/api/openapi.json",
+    )
     app.state.settings = settings
     app.state.redis = Redis.from_url(
         f"{settings.redis_url}/{settings.api_redis_db}",
@@ -547,4 +615,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(protected)
     app.include_router(public)
     app.include_router(health)
+    # Last, so every route above wins.
+    if settings.frontend_dist.is_dir():
+        app.mount("/", Screens(directory=settings.frontend_dist, html=True), name="screens")
     return app

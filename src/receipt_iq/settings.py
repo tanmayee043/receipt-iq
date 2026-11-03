@@ -40,6 +40,8 @@ class ApiSettings(Settings):
     rate_limit_general: int = 120
     rate_limit_upload: int = 10
     rate_limit_login: int = 5
+    # The built screens (npm run build). Served if present; the API works without them.
+    frontend_dist: Path = Path("frontend/dist")
 
 
 def get_settings() -> Settings:

@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+/* Tokens and their reasons are in DESIGN.md. */
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #f6f6f9;
+  --raised: #ffffff;
+  --border: #dedee5;
+  --text: #101114;
+  --text-2: #5c5f75;
+  --accent: #7132f5;
+  --accent-strong: #5741d8;
+  --accent-subtle: rgba(133, 91, 251, 0.14);
+  --on-accent: #ffffff;
+  --up: #0f7a4a;
+  --down: #c4283d;
+  --warn: #9a5a00;
+  --grid: rgba(16, 17, 20, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #101114;
+    --surface: #16171c;
+    --raised: #1d1e25;
+    --border: #2a2c36;
+    --text: #ececf1;
+    --text-2: #9a9db0;
+    --accent: #9b7bff;
+    --accent-strong: #b39cff;
+    --accent-subtle: rgba(155, 123, 255, 0.18);
+    --on-accent: #101114;
+    --up: #3ccf8e;
+    --down: #ff6b7d;
+    --warn: #f2b14a;
+    --grid: rgba(236, 236, 241, 0.08);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #101114;
+  --surface: #16171c;
+  --raised: #1d1e25;
+  --border: #2a2c36;
+  --text: #ececf1;
+  --text-2: #9a9db0;
+  --accent: #9b7bff;
+  --accent-strong: #b39cff;
+  --accent-subtle: rgba(155, 123, 255, 0.18);
+  --on-accent: #101114;
+  --up: #3ccf8e;
+  --down: #ff6b7d;
+  --warn: #f2b14a;
+  --grid: rgba(236, 236, 241, 0.08);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-on-accent: var(--on-accent);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-warn: var(--warn);
+  --font-sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --radius-control: 12px;
+  --radius-badge: 8px;
+}
+
+html {
+  background: var(--bg);
+  /* Keeps the layout from shifting between pages short and long enough to scroll. */
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border) transparent;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-subtle);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The main region takes focus on navigation, which needs no ring. */
+main:focus {
+  outline: none;
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+.numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.skeleton {
+  background: var(--surface);
+  border-radius: var(--radius-badge);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

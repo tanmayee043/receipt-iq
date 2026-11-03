@@ -9,3 +9,10 @@ __pycache__/
 
 # Datasets are downloaded, never committed
 data/
+
+# Frontend build output and test results
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/screenshots/

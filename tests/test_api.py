@@ -36,14 +36,14 @@ FIXED_BODY = {"receipt": GOOD.model_dump(mode="json")}
 DIGEST = "a" * 64
 
 PROTECTED = [
-    ("post", "/documents"),
-    ("get", f"/documents/{DIGEST}"),
-    ("get", f"/documents/{DIGEST}/image"),
-    ("get", "/review-queue"),
-    ("get", "/routing-log"),
-    ("post", f"/documents/{DIGEST}/correction"),
-    ("post", f"/documents/{DIGEST}/dismissal"),
-    ("post", "/logout"),
+    ("post", "/api/documents"),
+    ("get", f"/api/documents/{DIGEST}"),
+    ("get", f"/api/documents/{DIGEST}/image"),
+    ("get", "/api/review-queue"),
+    ("get", "/api/routing-log"),
+    ("post", f"/api/documents/{DIGEST}/correction"),
+    ("post", f"/api/documents/{DIGEST}/dismissal"),
+    ("post", "/api/logout"),
 ]
 
 
@@ -79,6 +79,8 @@ def make_settings(**overrides: Any) -> ApiSettings:
         "rate_limit_general": 1000,
         "rate_limit_upload": 1000,
         "rate_limit_login": 1000,
+        # So results don't depend on whether the screens happen to have been built.
+        "frontend_dist": Path("does-not-exist"),
         **overrides,
     }
     return ApiSettings(**values)
@@ -110,7 +112,7 @@ def anonymous() -> TestClient:
 
 @pytest.fixture
 def client(anonymous: TestClient) -> TestClient:
-    assert anonymous.post("/login", json={"password": PASSWORD}).status_code == 200
+    assert anonymous.post("/api/login", json={"password": PASSWORD}).status_code == 200
     return anonymous
 
 
@@ -132,7 +134,7 @@ def providers(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeProvider]:
 
 def upload(client: TestClient, image: bytes | None = None, **form: str) -> Any:
     files = {"file": ("receipt.png", image if image is not None else image_bytes(), "image/png")}
-    return client.post("/documents", files=files, data=form)
+    return client.post("/api/documents", files=files, data=form)
 
 
 def error_code(response: Any) -> str:
@@ -156,15 +158,15 @@ def test_upload_without_login_never_reaches_a_provider(
 
 
 def test_wrong_password_is_refused(anonymous: TestClient) -> None:
-    response = anonymous.post("/login", json={"password": "nope"})
+    response = anonymous.post("/api/login", json={"password": "nope"})
     assert (response.status_code, error_code(response)) == (401, "wrong_password")
-    assert anonymous.get("/session").json() == {"logged_in": False}
+    assert anonymous.get("/api/session").json() == {"logged_in": False}
 
 
 def test_login_cookie_cant_be_read_by_scripts_or_sent_from_other_sites(
     anonymous: TestClient,
 ) -> None:
-    cookie = anonymous.post("/login", json={"password": PASSWORD}).headers["set-cookie"].lower()
+    cookie = anonymous.post("/api/login", json={"password": PASSWORD}).headers["set-cookie"].lower()
     assert "httponly" in cookie
     assert "secure" in cookie
     assert "samesite=strict" in cookie
@@ -172,18 +174,18 @@ def test_login_cookie_cant_be_read_by_scripts_or_sent_from_other_sites(
 
 def test_logout_ends_the_session_for_real(client: TestClient) -> None:
     token = client.cookies["receipt_iq_session"]
-    assert client.get("/session").json() == {"logged_in": True}
-    assert client.post("/logout").status_code == 200
+    assert client.get("/api/session").json() == {"logged_in": True}
+    assert client.post("/api/logout").status_code == 200
 
     # The old cookie stops working too, which a signed cookie couldn't do.
     other = make_client()
     other.cookies.set("receipt_iq_session", token)
-    assert other.get("/review-queue").status_code == 401
+    assert other.get("/api/review-queue").status_code == 401
 
 
 def test_password_is_never_echoed_in_a_validation_error(anonymous: TestClient) -> None:
     secret = "x" * 2000
-    response = anonymous.post("/login", json={"password": secret})
+    response = anonymous.post("/api/login", json={"password": secret})
     assert error_code(response) == "validation_error"
     assert secret not in response.text
 
@@ -204,7 +206,7 @@ def test_upload_returns_the_answer_with_the_hash(
     assert body["provider"] == "fake"
     assert Receipt.model_validate(body["receipt"]) == GOOD
     assert body["attempts"][0]["outcome"] == "passed"
-    assert client.get(f"/documents/{body['digest']}").json()["status"] == "passed"
+    assert client.get(f"/api/documents/{body['digest']}").json()["status"] == "passed"
 
 
 def test_money_stays_exact_in_json(
@@ -248,7 +250,7 @@ def test_truncated_image_is_refused(client: TestClient) -> None:
 
 
 def test_upload_without_a_file_is_refused(client: TestClient) -> None:
-    response = client.post("/documents", data={"local_only": "true"})
+    response = client.post("/api/documents", data={"local_only": "true"})
     assert (response.status_code, error_code(response)) == (422, "missing_file")
 
 
@@ -259,7 +261,7 @@ def test_file_just_over_the_limit_is_refused(client: TestClient) -> None:
 
 def test_request_over_the_limit_is_refused_by_its_declared_size(client: TestClient) -> None:
     response = client.post(
-        "/documents", content=b"x", headers={"content-length": str(MAX_BODY_BYTES + 1)}
+        "/api/documents", content=b"x", headers={"content-length": str(MAX_BODY_BYTES + 1)}
     )
     assert response.status_code == 413
 
@@ -269,7 +271,7 @@ def test_request_over_the_limit_with_no_declared_size_is_refused(client: TestCli
         yield b"x" * (MAX_BODY_BYTES + 1)
 
     response = client.post(
-        "/documents",
+        "/api/documents",
         content=chunks(),
         headers={"content-type": "multipart/form-data; boundary=x"},
     )
@@ -312,7 +314,7 @@ def test_setup_problem_shows_as_failed_and_can_be_uploaded_again(
     assert body["failure_kind"] == "task_failed"
     assert "a bug in our code" in body["failure_reason"]
 
-    assert client.get("/review-queue").json()["items"] == []
+    assert client.get("/api/review-queue").json()["items"] == []
 
     tasks.get_extractor.cache_clear()
     providers(GOOD)
@@ -333,7 +335,7 @@ def test_failed_task_does_not_erase_an_answer(client: TestClient) -> None:
             },
         )
     tasks.ExtractionTask().on_failure(ValueError("late"), "id", [DIGEST, "gpt"], {}, None)
-    assert client.get(f"/documents/{DIGEST}").json()["status"] == "passed"
+    assert client.get(f"/api/documents/{DIGEST}").json()["status"] == "passed"
 
 
 def test_queue_down_is_reported_and_the_upload_can_be_retried(
@@ -370,7 +372,7 @@ def test_retries_that_run_out_end_up_in_the_review_queue(
     providers(*[TemporaryError("down") for _ in range(tasks.MAX_RETRIES + 1)])
     body = upload(client).json()
     assert body["status"] == "dead_letter"
-    assert [item["digest"] for item in client.get("/review-queue").json()["items"]] == [
+    assert [item["digest"] for item in client.get("/api/review-queue").json()["items"]] == [
         body["digest"]
     ]
 
@@ -378,7 +380,7 @@ def test_retries_that_run_out_end_up_in_the_review_queue(
 def test_processing_receipt_cant_be_corrected(client: TestClient) -> None:
     with session_scope() as session:
         begin_processing(session, DIGEST)
-    response = client.post(f"/documents/{DIGEST}/correction", json=FIXED_BODY)
+    response = client.post(f"/api/documents/{DIGEST}/correction", json=FIXED_BODY)
     assert (response.status_code, error_code(response)) == (409, "not_reviewable")
 
 
@@ -389,7 +391,7 @@ def test_image_comes_back_with_its_type(
     png, jpeg = image_bytes(), image_bytes(kind="JPEG")
     for image, media_type in ((png, "image/png"), (jpeg, "image/jpeg")):
         digest = upload(client, image).json()["digest"]
-        response = client.get(f"/documents/{digest}/image")
+        response = client.get(f"/api/documents/{digest}/image")
         assert response.content == image
         assert response.headers["content-type"] == media_type
         assert response.headers["x-content-type-options"] == "nosniff"
@@ -397,18 +399,18 @@ def test_image_comes_back_with_its_type(
 
 @pytest.mark.parametrize("bad", ["..%2F..%2Fsecret", "ABC", "a" * 63, "g" * 64])
 def test_hash_in_the_path_must_be_a_real_hash(client: TestClient, bad: str) -> None:
-    assert client.get(f"/documents/{bad}/image").status_code in (404, 422)
-    assert client.get(f"/documents/{bad}").status_code in (404, 422)
+    assert client.get(f"/api/documents/{bad}/image").status_code in (404, 422)
+    assert client.get(f"/api/documents/{bad}").status_code in (404, 422)
 
 
 def test_missing_document_is_a_404_in_the_usual_format(client: TestClient) -> None:
-    for path in (f"/documents/{DIGEST}", f"/documents/{DIGEST}/image"):
+    for path in (f"/api/documents/{DIGEST}", f"/api/documents/{DIGEST}/image"):
         response = client.get(path)
         assert (response.status_code, error_code(response)) == (404, "not_found")
 
 
 def test_unknown_path_uses_the_usual_error_format(anonymous: TestClient) -> None:
-    assert error_code(anonymous.get("/nope")) == "http_404"
+    assert error_code(anonymous.get("/api/nope")) == "http_404"
 
 
 def queued(digest_letter: str) -> str:
@@ -437,7 +439,7 @@ def test_queue_pages_through_everything_once_with_a_cursor(client: TestClient) -
         params: dict[str, Any] = {"limit": 2}
         if cursor:
             params["cursor"] = cursor
-        page = client.get("/review-queue", params=params).json()
+        page = client.get("/api/review-queue", params=params).json()
         seen += [item["digest"] for item in page["items"]]
         cursor = page["next_cursor"]
         if cursor is None:
@@ -447,40 +449,42 @@ def test_queue_pages_through_everything_once_with_a_cursor(client: TestClient) -
 
 def test_routing_log_is_newest_first_and_pages(client: TestClient) -> None:
     digests = [queued(letter) for letter in "abc"]
-    first = client.get("/routing-log", params={"limit": 2}).json()
+    first = client.get("/api/routing-log", params={"limit": 2}).json()
     assert [item["digest"] for item in first["items"]] == [digests[2], digests[1]]
     assert first["items"][0]["attempts"][0]["provider"] == "gpt"
-    second = client.get("/routing-log", params={"limit": 2, "cursor": first["next_cursor"]}).json()
+    second = client.get(
+        "/api/routing-log", params={"limit": 2, "cursor": first["next_cursor"]}
+    ).json()
     assert [item["digest"] for item in second["items"]] == [digests[0]]
     assert second["next_cursor"] is None
 
 
 def test_bad_cursor_and_bad_limit_are_refused(client: TestClient) -> None:
-    assert error_code(client.get("/review-queue", params={"cursor": "%%%"})) == "invalid_cursor"
-    assert client.get("/review-queue", params={"limit": 101}).status_code == 422
+    assert error_code(client.get("/api/review-queue", params={"cursor": "%%%"})) == "invalid_cursor"
+    assert client.get("/api/review-queue", params={"limit": 101}).status_code == 422
 
 
 def test_correction_works_and_a_second_is_refused(client: TestClient) -> None:
     digest = queued("a")
-    response = client.post(f"/documents/{digest}/correction", json=FIXED_BODY)
+    response = client.post(f"/api/documents/{digest}/correction", json=FIXED_BODY)
     assert response.status_code == 200
     assert response.json()["status"] == "corrected"
     assert Receipt.model_validate(response.json()["receipt"]) == BAD_MATH
-    assert client.get("/review-queue").json()["items"] == []
+    assert client.get("/api/review-queue").json()["items"] == []
 
-    again = client.post(f"/documents/{digest}/correction", json=FIXED_BODY)
+    again = client.post(f"/api/documents/{digest}/correction", json=FIXED_BODY)
     assert (again.status_code, error_code(again)) == (409, "not_reviewable")
 
 
 def test_correction_that_doesnt_add_up_needs_confirming(client: TestClient) -> None:
     digest = queued("a")
     body = {"receipt": BAD_MATH.model_dump(mode="json")}
-    refused = client.post(f"/documents/{digest}/correction", json=body)
+    refused = client.post(f"/api/documents/{digest}/correction", json=body)
     assert (refused.status_code, error_code(refused)) == (422, "correction_rejected")
     assert "total says 9000" in refused.json()["error"]["details"]["issues"][0]
 
     confirmed = client.post(
-        f"/documents/{digest}/correction", json={**body, "confirm_mismatch": True}
+        f"/api/documents/{digest}/correction", json={**body, "confirm_mismatch": True}
     )
     assert confirmed.json()["confirmed_mismatch"] is True
 
@@ -488,38 +492,101 @@ def test_correction_that_doesnt_add_up_needs_confirming(client: TestClient) -> N
 def test_correction_with_a_negative_amount_is_refused(client: TestClient) -> None:
     digest = queued("a")
     response = client.post(
-        f"/documents/{digest}/correction", json={"receipt": {"items": [], "total": "-1"}}
+        f"/api/documents/{digest}/correction", json={"receipt": {"items": [], "total": "-1"}}
     )
     assert error_code(response) == "validation_error"
 
 
 def test_dismissal(client: TestClient) -> None:
     digest = queued("a")
-    response = client.post(f"/documents/{digest}/dismissal", json={"reason": "not a receipt"})
+    response = client.post(f"/api/documents/{digest}/dismissal", json={"reason": "not a receipt"})
     assert response.json()["status"] == "dismissed"
-    missing = client.post(f"/documents/{'b' * 64}/dismissal", json={"reason": "x"})
+    missing = client.post(f"/api/documents/{'b' * 64}/dismissal", json={"reason": "x"})
     assert missing.status_code == 404
-    assert client.post(f"/documents/{digest}/dismissal", json={"reason": ""}).status_code == 422
+    assert client.post(f"/api/documents/{digest}/dismissal", json={"reason": ""}).status_code == 422
 
 
 def test_leaderboard_is_public_and_matches_the_file(anonymous: TestClient) -> None:
-    body = anonymous.get("/leaderboard").json()
+    body = anonymous.get("/api/leaderboard").json()
     assert body["receipts"] > 0
     assert {"local", "gpt"} <= {provider["provider"] for provider in body["providers"]}
 
 
+def test_leaderboard_says_how_the_router_uses_it(anonymous: TestClient) -> None:
+    body = anonymous.get("/api/leaderboard").json()
+    assert body["accuracy_target"] == 0.75
+    assert body["max_seconds"] == 60
+    assert sorted(body["routing_order"]) == sorted(p["provider"] for p in body["providers"])
+    # The router's first choice is the cheapest that qualifies, so it must meet the policy.
+    meeting = {p["provider"] for p in body["providers"] if p["meets_policy"]}
+    assert body["routing_order"][0] in meeting
+    gemma = next(p for p in body["providers"] if p["provider"] == "gemma")
+    assert gemma["meets_policy"] is False  # accurate enough, but too slow
+
+
+@pytest.fixture
+def with_screens(tmp_path: Path) -> TestClient:
+    screens = tmp_path / "dist"
+    (screens / "assets").mkdir(parents=True)
+    (screens / "index.html").write_text("<title>the app</title>", encoding="utf-8")
+    (screens / "assets" / "app.js").write_text("run()", encoding="utf-8")
+    return make_client(frontend_dist=screens)
+
+
+@pytest.mark.parametrize("address", ["/", "/leaderboard", "/routing-log", "/some/deep/page"])
+def test_page_addresses_get_the_app(with_screens: TestClient, address: str) -> None:
+    response = with_screens.get(address)
+    assert response.status_code == 200
+    assert "the app" in response.text
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_built_files_are_served_as_themselves(with_screens: TestClient) -> None:
+    assert with_screens.get("/assets/app.js").text == "run()"
+
+
+def test_missing_file_is_a_404_not_the_app(with_screens: TestClient) -> None:
+    response = with_screens.get("/assets/gone.js")
+    assert response.status_code == 404
+    assert "the app" not in response.text
+
+
+def test_files_outside_the_build_cant_be_reached(with_screens: TestClient, tmp_path: Path) -> None:
+    (tmp_path / "secret.txt").write_text("private", encoding="utf-8")
+    response = with_screens.get("/assets/..%2F..%2Fsecret.txt")
+    assert "private" not in response.text
+
+
+def test_api_addresses_stay_the_api_with_screens_present(with_screens: TestClient) -> None:
+    assert with_screens.get("/api/leaderboard").json()["receipts"] > 0
+    assert with_screens.get("/healthz").json()["status"] == "ok"
+    assert with_screens.get("/api/docs").status_code == 200
+    unknown = with_screens.get("/api/nope")
+    assert (unknown.status_code, error_code(unknown)) == (404, "http_404")
+    assert with_screens.get("/api/review-queue").status_code == 401
+    # Resolving the ".." would leave an address that isn't under /api at all.
+    assert with_screens.get("/api/documents/..%2F..%2Fsecret").status_code == 404
+
+
+def test_app_starts_without_built_screens(tmp_path: Path) -> None:
+    client = make_client(frontend_dist=tmp_path / "not-built")
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/leaderboard").status_code == 404
+
+
 def test_general_rate_limit_answers_429_with_a_wait() -> None:
     client = make_client(rate_limit_general=2)
-    statuses = [client.get("/leaderboard").status_code for _ in range(3)]
+    statuses = [client.get("/api/leaderboard").status_code for _ in range(3)]
     assert statuses == [200, 200, 429]
-    response = client.get("/leaderboard")
+    response = client.get("/api/leaderboard")
     assert error_code(response) == "rate_limited"
     assert 0 < int(response.headers["retry-after"]) <= 61
 
 
 def test_login_rate_limit_slows_password_guessing() -> None:
     client = make_client(rate_limit_login=2)
-    statuses = [client.post("/login", json={"password": "guess"}).status_code for _ in range(3)]
+    statuses = [client.post("/api/login", json={"password": "guess"}).status_code for _ in range(3)]
     assert statuses == [401, 401, 429]
 
 
@@ -528,7 +595,7 @@ def test_upload_rate_limit_stops_uploads_before_a_provider_is_called(
 ) -> None:
     provider = providers(GOOD, GOOD)
     client = make_client(rate_limit_upload=1)
-    client.post("/login", json={"password": PASSWORD})
+    client.post("/api/login", json={"password": PASSWORD})
     assert upload(client, image_bytes("white")).status_code == 202
     assert upload(client, image_bytes("black")).status_code == 429
     assert provider.calls == 1
@@ -554,7 +621,7 @@ def test_redis_down_refuses_requests_rather_than_dropping_the_limits(
     anonymous: TestClient,
 ) -> None:
     broken_redis(anonymous)
-    response = anonymous.get("/leaderboard")
+    response = anonymous.get("/api/leaderboard")
     assert (response.status_code, error_code(response)) == (503, "unavailable")
 
 
@@ -570,7 +637,7 @@ def test_postgres_down_is_a_503_and_not_a_stack_trace(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://nobody:nothing@127.0.0.1:1/nothing")
-    response = client.get("/review-queue")
+    response = client.get("/api/review-queue")
     assert (response.status_code, error_code(response)) == (503, "unavailable")
     assert client.get("/readyz").json()["checks"]["postgres"] is False
 
@@ -582,14 +649,14 @@ def test_unexpected_error_hides_the_details(
         raise ValueError("secret internal detail")
 
     monkeypatch.setattr(api, "review_queue", explode)
-    response = client.get("/review-queue")
+    response = client.get("/api/review-queue")
     assert (response.status_code, error_code(response)) == (500, "internal_error")
     assert "secret internal detail" not in response.text
 
 
 def test_openapi_describes_the_upload(anonymous: TestClient) -> None:
-    schema = anonymous.get("/openapi.json").json()
-    body = schema["paths"]["/documents"]["post"]["requestBody"]
+    schema = anonymous.get("/api/openapi.json").json()
+    body = schema["paths"]["/api/documents"]["post"]["requestBody"]
     assert "multipart/form-data" in body["content"]
 
 
