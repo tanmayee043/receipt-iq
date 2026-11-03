@@ -416,7 +416,6 @@ Limits for now:
 
 - **No record of who corrected a receipt.** That needs the login, which comes with the API.
 - **Corrections are exported, not scored yet.** The leaderboard doesn't read them so far.
-- **Results are only reachable from the terminal** until the API and screens exist.
 - **A newer run replaces the model's answer on a waiting receipt**, so the row holds the latest
   run, not every run.
 
@@ -428,12 +427,100 @@ python scripts/review_queue.py dismiss DIGEST "not a receipt"
 python scripts/review_queue.py export
 ```
 
+## API (`api.py`, `security.py`, `settings.py`)
+
+What the screens will call. Interactive docs are at `/docs`.
+
+```
+upload ──► size, login and rate checks ──► is it really an image? ──► Postgres: processing
+                                                                               │
+                     screen polls GET /documents/{digest} ◄── worker ◄── Redis ┘
+```
+
+| Endpoint | What it does | Access |
+|---|---|---|
+| `POST /documents` | Upload a receipt and return its hash straight away (202; 200 if already known) | Login |
+| `GET /documents/{digest}` | Status, answer, issues and routing log | Login |
+| `GET /documents/{digest}/image` | The receipt image | Login |
+| `GET /review-queue` | Waiting receipts, oldest first, with cursor pagination | Login |
+| `GET /routing-log` | Which provider handled each receipt and why, newest first | Login |
+| `POST /documents/{digest}/correction` | Save a person's fix | Login |
+| `POST /documents/{digest}/dismissal` | Take a receipt out of the queue | Login |
+| `POST /login`, `POST /logout`, `GET /session` | Owner login | Public, stricter limit on login |
+| `GET /leaderboard` | Accuracy, cost and speed per provider | Public |
+| `GET /healthz`, `GET /readyz` | Running, and able to reach Postgres and Redis | Public, not rate limited |
+
+**Protecting the quota:**
+
+- **Login comes before the upload is read.** FastAPI reads a declared `File` before it runs
+  dependencies, so the upload route reads the form itself, after the login and limits have passed.
+- **Sessions live in Redis.** The cookie holds a random token and Redis only its hash, so logging
+  out ends the session for real. The cookie is `HttpOnly`, `Secure` and `SameSite=Strict`.
+- **Rate limits per IP**, also in Redis: 120 requests a minute in general, 10 uploads, 5 logins. If
+  Redis is down, requests get a 503 rather than running with no limits.
+- **Uploads are checked for what they really are.** Only JPEG and PNG, up to 10 MB and 100
+  megapixels, and Pillow has to open them, so a renamed file is refused. The size limit also
+  covers requests that don't declare a size.
+
+**Behaviour worth knowing:**
+
+- **Writes are safe to repeat.** The same image is one document and one provider call. A second
+  correction or dismissal gets a 409 rather than being applied twice.
+- **`processing` and `failed` are statuses.** `failed` means a setup problem or a bug, so it goes
+  to whoever runs this and not the review queue. Uploading again retries it, as it does a dead
+  letter or a `processing` row older than 2 hours, whose task must have been lost.
+- **One error format:** `{"error": {"code", "message", "details"}}`, with no stack traces, and
+  validation errors never echo what was submitted, so a password can't come back in one.
+- **Settings are checked at startup.** There are no default addresses: `DATABASE_URL`, `REDIS_URL`
+  and, for the API, `OWNER_PASSWORD_HASH` must be set or it stops with a clear error.
+
+**Why tests use Compose and CI services and not Testcontainers:** both give a real Postgres and
+Redis, which is what matters, and these are already running for local work. Testcontainers would
+add a dependency without adding coverage.
+
+**Checked for real over HTTP, with uvicorn, a worker, Redis and Postgres, on cached receipts with
+a fake GPT address and fake keys:**
+
+| Test | Result |
+|---|---|
+| Upload with no worker running | 202 and `processing`; once a worker started, it finished as `passed` |
+| Same image again while it waited | 200, nothing queued |
+| Upload or read the queue with no login | 401 |
+| Text file named `.png` | 415 |
+| 11 MB upload; 12 MB stream with no declared size | Both 413 |
+| 2 flagged receipts | Second opinion from Gemini: one passed, one went to the queue with its location |
+| Correct it: one that doesn't add up, one that does, then again | 422, 200, then 409 |
+| Task whose image is missing | Row marked `failed` with the reason |
+| Stop Postgres | Reads got 503, `/readyz` 503, `/healthz` 200; all fine once it was back |
+| Stop Redis | Requests got 503, `/readyz` 503; the session survived the restart |
+| Log out | Queue back to 401 |
+| 7 wrong passwords in a row | 401 five times, then 429 |
+| Start with no `OWNER_PASSWORD_HASH` | Stopped at startup naming the setting |
+
+Limits for now:
+
+- **Not public yet.** HTTPS comes with hosting, and `Secure` cookies need it.
+- **One owner account**, so there's no record of who corrected what.
+- **`/readyz` doesn't check for a worker**, so uploads can be accepted and wait with none running.
+- **Limits are per IP in fixed windows.** A burst across a minute's edge can reach twice the limit.
+- **Images only.** PDFs and multi-page documents aren't supported yet.
+- **Graceful shutdown isn't tested.** Uvicorn finishes in-flight requests on SIGTERM on Linux, and
+  this was only run on Windows.
+
+```bash
+python scripts/hash_password.py           # asks for a password, prints the hash for OWNER_PASSWORD_HASH
+uvicorn receipt_iq.api:create_app --factory
+```
+
+For plain-http local testing, set `COOKIE_SECURE=false`.
+
 ## Run it
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
-docker compose up -d     # tests need Postgres
+copy .env.example .env   # local addresses, no secrets
+docker compose up -d     # tests need Postgres and Redis
 pytest
 ```

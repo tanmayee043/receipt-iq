@@ -18,6 +18,9 @@ What each failure means:
 - Postgres unreachable: retried, and the provider isn't paid again because its answer is
   cached. If it never comes back, the task fails visibly.
 
+A task that fails for good marks its row `failed`, so a screen doesn't show it as still
+processing forever.
+
 Provider calls go through the disk cache and results are saved under the image hash, so
 running a task twice costs nothing and gives the same result. That matters because of
 `acks_late`: a task is only removed from Redis once it has finished, so a crashed
@@ -40,7 +43,7 @@ pool on Linux); here, each provider's own request timeout is what bounds a task.
 """
 
 import hashlib
-import os
+import logging
 from collections.abc import Callable
 from dataclasses import asdict
 from decimal import Decimal
@@ -51,10 +54,10 @@ from typing import Any, Protocol
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.result import AsyncResult
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from receipt_iq.cache import CachedExtractor
-from receipt_iq.db import session_scope
+from receipt_iq.db import FAILED, session_scope
 from receipt_iq.evaluation import ExtractionError, Extractor, TemporaryError
 from receipt_iq.providers.azure_di import AzureDocumentIntelligence
 from receipt_iq.providers.azure_openai import AzureOpenAI
@@ -62,17 +65,17 @@ from receipt_iq.providers.gemini import Gemini
 from receipt_iq.providers.local import TesseractOllama
 from receipt_iq.review import issue_json, save_result
 from receipt_iq.router import Routed, Router, load_routes
+from receipt_iq.settings import get_settings
 from receipt_iq.validation import validate
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+logger = logging.getLogger(__name__)
+
+REDIS_URL = get_settings().redis_url
 TOLERANCE = Decimal(100)  # IDR, as in scripts/evaluate.py
 AUTO = "auto"  # let the router choose the provider
 LEADERBOARD = Path("leaderboard.json")
 MAX_RETRIES = 5
 RETRY_BASE_SECONDS = 60  # 1, 2, 4, 8, then 16 minutes
-# How long Redis waits before handing a crashed worker's receipt to another worker. Has
-# to outlast the longest task and retry wait, or a healthy task gets delivered twice.
-VISIBILITY_TIMEOUT = int(os.environ.get("CELERY_VISIBILITY_TIMEOUT", "3600"))
 
 app = Celery("receipt_iq", broker=f"{REDIS_URL}/0", backend=f"{REDIS_URL}/1")
 app.conf.update(
@@ -86,7 +89,7 @@ app.conf.update(
     task_soft_time_limit=1500,
     task_time_limit=1800,
     broker_connection_retry_on_startup=True,
-    broker_transport_options={"visibility_timeout": VISIBILITY_TIMEOUT},
+    broker_transport_options={"visibility_timeout": get_settings().celery_visibility_timeout},
 )
 
 
@@ -104,13 +107,17 @@ PROVIDERS: dict[str, Callable[[], Provider]] = {
 
 
 def _data_root() -> Path:
-    return Path(os.environ.get("RECEIPT_IQ_DATA", "data"))
+    return get_settings().receipt_iq_data
+
+
+def upload_path(digest: str) -> Path:
+    return _data_root() / "uploads" / digest
 
 
 def store_image(image: bytes) -> str:
     """Save the image under its hash and return the hash."""
     digest = hashlib.sha256(image).hexdigest()
-    path = _data_root() / "uploads" / digest
+    path = upload_path(digest)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write to a temp file then rename, so a worker never reads half an image.
@@ -168,7 +175,30 @@ def _finish(task: Any, result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+BaseTask: Any = app.Task
+
+
+class ExtractionTask(BaseTask):
+    def on_failure(self, exc: Exception, task_id: str, args: Any, kwargs: Any, einfo: Any) -> None:
+        digest, provider = args[0], args[1]
+        failure = {
+            "status": FAILED,
+            "digest": digest,
+            "provider": provider,
+            "kind": "task_failed",
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        try:
+            with session_scope() as session:
+                save_result(session, failure)
+        except SQLAlchemyError:
+            # Postgres is what failed. The row stays processing until it counts as stale,
+            # when uploading the image again queues a new task.
+            logger.exception("couldn't mark %s failed", digest)
+
+
 @app.task(
+    base=ExtractionTask,
     bind=True,
     name="extract_receipt",
     acks_late=True,
@@ -178,7 +208,7 @@ def _finish(task: Any, result: dict[str, Any]) -> dict[str, Any]:
 def extract_receipt(
     self: Any, digest: str, provider: str, local_only: bool = False
 ) -> dict[str, Any]:
-    image = (_data_root() / "uploads" / digest).read_bytes()
+    image = upload_path(digest).read_bytes()
     routed: Routed | None = None
     try:
         if provider == AUTO:
