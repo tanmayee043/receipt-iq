@@ -2,7 +2,8 @@
 
 Usage: python scripts/submit_receipts.py {auto,local,gemini,gemma,azure,gpt} [split] [--limit N]
 
-Needs Redis (`docker compose up -d`). Receipts wait in Redis until a worker is running:
+Needs Redis and Postgres (`docker compose up -d`, then `alembic upgrade head`). Receipts
+wait in Redis until a worker is running:
     celery -A receipt_iq.tasks worker --pool=solo --loglevel=info
 
 With --no-wait it only queues them and exits, which shows that the queue holds the work
@@ -43,7 +44,8 @@ def main() -> None:
     for receipt_id, task in queued:
         result = task.get(timeout=args.timeout)
         statuses[result["status"]] += 1
-        detail = result.get("reason") or "; ".join(result.get("issues", []))
+        issues = [issue["message"] for issue in result.get("issues", [])]
+        detail = result.get("reason") or "; ".join(issues)
         print(f"  {receipt_id}  {result['status']}  {result['provider']}  {detail[:80]}")
         for attempt in result.get("attempts", []):
             print(f"      {attempt['provider']}: {attempt['outcome']} {attempt['reason'][:80]}")

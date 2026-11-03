@@ -283,9 +283,11 @@ submit(image) ──► data/uploads/<hash> ──► Redis ──► worker ─
 | `TemporaryError` (quota, overload, network) | Retries after 1, 2, 4, 8, then 16 min, then dead-letters without caching | Says nothing about the receipt, so it can be submitted again later |
 | `ExtractionError` (provider can't read it) | Dead-letters immediately | Retrying spends money on the same answer |
 | `RuntimeError` (wrong key, retired model) | Fails the task visibly | Every receipt would hit it, and only a person can fix it |
+| Postgres unreachable when saving | Retries after 1 min, then fails visibly if it never returns | The answer is cached, so the provider isn't paid again |
 
-- **Safe to run twice.** The task id comes from the provider and image hash, and results go
-  through the disk cache, so a repeat costs nothing.
+- **Safe to run twice.** Provider calls go through the disk cache and results are saved under the
+  image hash, so a repeat costs nothing. Each submission has its own task id, so `.get()` waits
+  for that run instead of returning an earlier result.
 - **Survives a crash.** A task only leaves Redis once it has finished (`acks_late`).
 - **Only the hash is queued.** A 10 MB photo doesn't belong in a message broker.
 
@@ -307,7 +309,8 @@ Two limits worth knowing:
   bounds a task. The time limits apply on Linux with the prefork pool. They weren't tested here.
 
 ```bash
-docker compose up -d                                              # Redis, this machine only
+docker compose up -d                                              # Redis and Postgres, this machine only
+alembic upgrade head                                              # create or update the tables
 celery -A receipt_iq.tasks worker --pool=solo --loglevel=info     # in a second terminal
 python scripts/submit_receipts.py gpt --limit 3
 ```
@@ -363,14 +366,66 @@ Read those numbers with care:
 | 8 receipts, normal routing | GPT answered most; 2 flagged went to Gemini; one then passed validation, and the other was sent to review |
 | Wrong GPT key, empty cache | HTTP 401 moved on to Gemini; on the next receipt the breaker skipped GPT, Gemini was out of quota, and Gemma answered |
 
-One limit: results are stored under the task id, so submitting a receipt again returns the stored
-result until the new run finishes. That's fine for repeats, but after a dead letter from a provider
-outage, the caller could read the old result first.
-
 ```bash
 python scripts/build_leaderboard.py      # no provider calls; re-run when results change
 python scripts/simulate_routing.py       # no provider calls
 python scripts/submit_receipts.py auto --limit 5
+```
+
+## Review queue (`review.py`, `db.py`)
+
+Each finished receipt is saved to Postgres, one row per image hash. Anything flagged or
+dead-lettered waits there for a person.
+
+```
+worker result ──► Postgres ──► passed
+                          ├──► needs_review ─┐
+                          └──► dead_letter ──┴──► correct ──► corrected ──► labeled data
+                                             └──► dismiss ──► dismissed
+```
+
+- **The reason is stored with its location**, such as `items[2]` or `total`, so a screen can
+  highlight the wrong line.
+- **Corrections go through the same validator.** One that still doesn't add up is refused unless
+  the person confirms it, because some real receipts misprint. Confirmed ones are marked.
+- **The model's answer is kept beside the correction**, so you can see what it got wrong.
+- **Passed receipts can be corrected too.** The validator can't see wrong amounts that add up.
+- **A person's decision stands.** A later run never replaces a correction or dismissal.
+- **A failure doesn't erase an answer**, while a success does replace an earlier dead letter.
+- **Two people can't both correct one receipt.** The row is locked, and the second is refused.
+- **Corrections stay out of the held-out split.** `export` leaves out any receipt in the test split,
+  because a test receipt whose answer has been seen and fixed is no longer a test.
+
+Tests run against a real Postgres, built by running the migrations, and one test fails if the
+tables in `db.py` drift from them.
+
+**Checked for real through Redis, Postgres and a worker, on cached receipts with a fake provider
+address, so no provider could be called:**
+
+| Test | Result |
+|---|---|
+| 20 receipts through GPT | 18 passed, 2 saved to the queue with their reason and location |
+| Dead letter, then the same image through another provider | Queue entry cleared, status `passed`, failure details removed |
+| A failing re-run of a receipt that already has an answer | Answer kept |
+| Correct with the model's wrong answer | Refused; receipt stayed in the queue |
+| Correct with the hand-made label, then re-run the receipt | `corrected`, and the re-run left it alone |
+| Stop Postgres while a task finishes | Task retried, finished once Postgres was back, row saved |
+| Export with the corrected receipt's split as the held-out one | 0 rows written |
+
+Limits for now:
+
+- **No record of who corrected a receipt.** That needs the login, which comes with the API.
+- **Corrections are exported, not scored yet.** The leaderboard doesn't read them so far.
+- **Results are only reachable from the terminal** until the API and screens exist.
+- **A newer run replaces the model's answer on a waiting receipt**, so the row holds the latest
+  run, not every run.
+
+```bash
+python scripts/review_queue.py list
+python scripts/review_queue.py show DIGEST
+python scripts/review_queue.py correct DIGEST fixed.json
+python scripts/review_queue.py dismiss DIGEST "not a receipt"
+python scripts/review_queue.py export
 ```
 
 ## Run it
@@ -379,5 +434,6 @@ python scripts/submit_receipts.py auto --limit 5
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
+docker compose up -d     # tests need Postgres
 pytest
 ```

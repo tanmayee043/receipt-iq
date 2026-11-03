@@ -3,7 +3,9 @@
     submit(image) ──► data/uploads/<hash> ──► Redis ──► worker ──► provider (through the cache)
                                                                        │
                                      passed / needs_review ◄── validate ┤
-                                                                        └──► dead letter
+                                                │                       └──► dead letter
+                                                ▼                                 │
+                                            Postgres ◄────────────────────────────┘
 
 What each failure means:
 - TemporaryError (quota, overload, network): retried with growing waits, since it says
@@ -13,17 +15,23 @@ What each failure means:
   Retrying would spend money on the same answer.
 - RuntimeError (wrong key, retired model): left to fail the task visibly, because every
   receipt would hit it and only a person can fix it.
+- Postgres unreachable: retried, and the provider isn't paid again because its answer is
+  cached. If it never comes back, the task fails visibly.
 
-The task id comes from the provider and image hash, and results go through the disk
-cache, so running a task twice costs nothing and gives the same result. That matters
-because of `acks_late`: a task is only removed from Redis once it has finished, so a
-crashed worker's receipt is delivered again rather than lost.
+Provider calls go through the disk cache and results are saved under the image hash, so
+running a task twice costs nothing and gives the same result. That matters because of
+`acks_late`: a task is only removed from Redis once it has finished, so a crashed
+worker's receipt is delivered again rather than lost.
+
+Each submission gets its own task id, so `.get()` waits for this run instead of returning
+a stored result from an earlier one. Screens read the outcome from Postgres (review.py).
 
 The queue holds only the hash: a 10 MB photo doesn't belong in a message broker.
 
 With provider "auto", the router (router.py) chooses for each receipt and records why.
 
-Start Redis with `docker compose up -d` and a worker with:
+Start Redis and Postgres with `docker compose up -d`, create the tables with
+`alembic upgrade head`, and start a worker with:
     celery -A receipt_iq.tasks worker --pool=solo --loglevel=info
 
 --pool=solo runs one task at a time, which suits the providers' rate limits and is what
@@ -32,7 +40,6 @@ pool on Linux); here, each provider's own request timeout is what bounds a task.
 """
 
 import hashlib
-import json
 import os
 from collections.abc import Callable
 from dataclasses import asdict
@@ -44,13 +51,16 @@ from typing import Any, Protocol
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.result import AsyncResult
+from sqlalchemy.exc import OperationalError
 
 from receipt_iq.cache import CachedExtractor
+from receipt_iq.db import session_scope
 from receipt_iq.evaluation import ExtractionError, Extractor, TemporaryError
 from receipt_iq.providers.azure_di import AzureDocumentIntelligence
 from receipt_iq.providers.azure_openai import AzureOpenAI
 from receipt_iq.providers.gemini import Gemini
 from receipt_iq.providers.local import TesseractOllama
+from receipt_iq.review import issue_json, save_result
 from receipt_iq.router import Routed, Router, load_routes
 from receipt_iq.validation import validate
 
@@ -121,8 +131,7 @@ def submit(image: bytes, provider: str = AUTO, local_only: bool = False) -> Asyn
     if local_only and provider != AUTO:
         raise ValueError("local_only only applies when the router chooses the provider")
     digest = store_image(image)
-    task_id = f"{provider}{'-local' if local_only else ''}-{digest}"
-    return extract_receipt.apply_async((digest, provider, local_only), task_id=task_id)
+    return extract_receipt.apply_async((digest, provider, local_only))
 
 
 @cache
@@ -139,23 +148,24 @@ def get_router() -> Router:
     return Router(load_routes(LEADERBOARD), get_extractor)
 
 
-def _dead_letter_path(digest: str, provider: str) -> Path:
-    return _data_root() / "dead_letter" / f"{provider}-{digest}.json"
-
-
 def _dead_letter(digest: str, provider: str, kind: str, reason: str) -> dict[str, Any]:
-    """Record a receipt that needs a person, on disk so it outlives Redis and the worker."""
-    entry = {
+    """A receipt that needs a person."""
+    return {
         "status": "dead_letter",
         "digest": digest,
         "provider": provider,
         "kind": kind,
         "reason": reason,
     }
-    path = _dead_letter_path(digest, provider)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(entry, indent=1), encoding="utf-8")
-    return entry
+
+
+def _finish(task: Any, result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        with session_scope() as session:
+            save_result(session, result)
+    except OperationalError as failure:
+        raise task.retry(exc=failure, countdown=RETRY_BASE_SECONDS) from failure
+    return result
 
 
 @app.task(
@@ -181,26 +191,27 @@ def extract_receipt(
         retries = self.request.retries
         if retries >= MAX_RETRIES:
             reason = f"gave up after {retries} retries: {failure}"
-            return _dead_letter(digest, provider, "retries_exhausted", reason)
+            return _finish(self, _dead_letter(digest, provider, "retries_exhausted", reason))
         raise self.retry(exc=failure, countdown=RETRY_BASE_SECONDS * 2**retries) from failure
     except ExtractionError as failure:
-        return _dead_letter(digest, provider, "extraction_failed", str(failure))
+        return _finish(self, _dead_letter(digest, provider, "extraction_failed", str(failure)))
 
-    # This provider has an answer now, so an earlier give-up no longer applies.
-    _dead_letter_path(digest, provider).unlink(missing_ok=True)
     checked = validate(receipt, TOLERANCE)
-    return {
-        "status": "passed" if checked.passed else "needs_review",
-        "digest": digest,
-        "provider": routed.provider if routed else provider,
-        "receipt": receipt.model_dump(mode="json"),
-        "issues": [issue.message for issue in checked.issues],
-        "seconds": (
-            sum(attempt.seconds for attempt in routed.attempts)
-            if routed
-            else extractor.last_seconds
-        ),
-        # The routing log: which providers were tried, and why this one answered.
-        "attempts": [asdict(attempt) for attempt in routed.attempts] if routed else [],
-        "met_target": routed.met_target if routed else None,
-    }
+    return _finish(
+        self,
+        {
+            "status": "passed" if checked.passed else "needs_review",
+            "digest": digest,
+            "provider": routed.provider if routed else provider,
+            "receipt": receipt.model_dump(mode="json"),
+            "issues": [issue_json(issue) for issue in checked.issues],
+            "seconds": (
+                sum(attempt.seconds for attempt in routed.attempts)
+                if routed
+                else extractor.last_seconds
+            ),
+            # The routing log: which providers were tried, and why this one answered.
+            "attempts": [asdict(attempt) for attempt in routed.attempts] if routed else [],
+            "met_target": routed.met_target if routed else None,
+        },
+    )
