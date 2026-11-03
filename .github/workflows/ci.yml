@@ -8,6 +8,21 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Tests use a real Postgres, so they also check the migrations.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: receipt_iq
+          POSTGRES_PASSWORD: receipt_iq
+          POSTGRES_DB: receipt_iq
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U receipt_iq"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
