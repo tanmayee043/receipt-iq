@@ -68,14 +68,14 @@ def rank(
 ) -> list[Route]:
     """The order to try providers in."""
     usable = [route for route in routes if route.local or not local_only]
-    good_enough = [r for r in usable if _qualifies(r, target, max_seconds)]
-    others = [r for r in usable if not _qualifies(r, target, max_seconds)]
+    good_enough = [r for r in usable if qualifies(r, target, max_seconds)]
+    others = [r for r in usable if not qualifies(r, target, max_seconds)]
     return sorted(good_enough, key=lambda r: (r.cost_per_1000, r.median_seconds)) + sorted(
         others, key=lambda r: -r.accuracy
     )
 
 
-def _qualifies(route: Route, target: float, max_seconds: float) -> bool:
+def qualifies(route: Route, target: float, max_seconds: float) -> bool:
     return route.accuracy >= target and route.median_seconds <= max_seconds
 
 
@@ -202,7 +202,7 @@ class Router:
         raise ExtractionError(f"no provider could read this receipt ({summary})")
 
     def _met(self, route: Route) -> bool:
-        return _qualifies(route, self.target, self.max_seconds)
+        return qualifies(route, self.target, self.max_seconds)
 
     def _attempt(
         self,
