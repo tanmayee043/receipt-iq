@@ -128,7 +128,7 @@ Model choice, checked on a new free-tier account (Oct 2026): `gemini-2.5-flash` 
 accounts, and `gemini-3.8-flash` never answered (a one-word reply hung for 3 minutes). The model
 is pinned rather than an alias like `gemini-flash-latest`, so runs stay comparable.
 
-**Partial result so far: 73 of 98 validation receipts** (the comparison tables below use the first 57). The free daily quota
+**Partial result so far: 87 of 98 validation receipts** (the comparison tables below use the first 57). The free daily quota
 has ranged from 9 to 21 requests, so the full run is being completed day by day from the cache.
 
 ```bash
@@ -522,6 +522,9 @@ decisions are in [`DESIGN.md`](DESIGN.md), and share the crypto dashboard's colo
 
 | Screen | What it answers | Access |
 |---|---|---|
+| Upload | Send a photo, and optionally keep it on this machine | Login |
+| Receipt | What did the model read, beside the image, and what's wrong with it? Fix or dismiss it | Login |
+| Review queue | What's waiting for a person, and why? | Login |
 | Model leaderboard | Which provider should I trust, what does it cost, and which does the router try first? | Public |
 | Routing log | Which provider handled this receipt, what did the others do, and why? | Login |
 
@@ -530,19 +533,35 @@ decisions are in [`DESIGN.md`](DESIGN.md), and share the crypto dashboard's colo
 - **The leaderboard says how far to trust it.** It's labeled provisional, an estimated cost says so
   beside the figure, and the chart's numbers are in the table too.
 - **The chart library loads only on the page that uses it.** It's more than half the download.
+- **A receipt updates by itself.** It polls every 2 s while processing, then stops.
+- **The problem appears where it is.** A saved issue's location marks the wrong line or amount,
+  with the reason beside it in words.
+- **Money stays text in the form,** so an amount can't be rounded on its way to the server.
 
 **Tested:**
 
-- 40 Playwright runs of 20 tests, at phone and desktop widths with the API mocked: every empty,
-  loading and error state, worst-case long text, sorting, login, logout, keyboard entry and both
-  themes. Each saves screenshots, which CI keeps as an artifact.
-- Real Chromium against the real server, Redis, Postgres and a worker at both widths: real
-  receipts appeared in the log, a wrong password was refused, the session survived a reload, logging
-  out hid the log, and there were no console or Content-Security-Policy errors.
+- 40 Playwright tests at phone and desktop widths with the API mocked: every empty, loading and
+  error state, worst-case long text, sorting, uploading, correcting, dismissing, login, logout,
+  keyboard entry and both themes. Screenshots are kept as a CI artifact.
+- Real Chromium against the real server, Redis, Postgres and a worker, on cached receipts with fake
+  provider addresses:
+
+| Test | Result |
+|---|---|
+| Upload with no worker, then start one | Showed "Reading this receipt", then updated by itself to `needs_review` with no reload |
+| Open it from the queue | The image loaded, with the reason beside the flagged amount |
+| Correct with a total that doesn't add up | Refused by the real validator; "Save anyway" stored it as confirmed, with the model's answer kept |
+| Upload the same image again | The correction stood |
+| A text file renamed `.png` | Refused by the server |
+| Phone width, real receipt | No sideways scrolling |
+| The whole run | No console or Content-Security-Policy errors |
 
 Limits for now:
 
-- **No upload, review or split-bill screens yet.** Those come next.
+- **No split-bill screen or demo mode yet.** Those come next.
+- **Hovering an item doesn't highlight it on the image.** Providers don't return positions, and
+  asking would mean a new prompt version and re-spending quota. Zoom covers it for now.
+- **Correcting is one person, one pass.** A saved correction can't be edited afterwards.
 - **Fonts come from Google Fonts**, as on the crypto dashboard, rather than being self-hosted.
 - **API types are written by hand** from the response models, so a change has to be made in both.
 - **No Lighthouse score yet.** The plan's accessibility target of 90+ still needs measuring.

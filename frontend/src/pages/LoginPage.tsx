@@ -6,7 +6,7 @@ import { PageHeading } from "../components/States";
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from ?? "/routing-log";
+  const from = (location.state as { from?: string } | null)?.from ?? "/review";
 
   return (
     <>

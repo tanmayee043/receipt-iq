@@ -8,6 +8,8 @@ import { useTheme } from "../theme";
 import { MoonIcon, SunIcon } from "./Icons";
 
 const PAGES = [
+  { to: "/upload", label: "Upload", title: "Upload a receipt" },
+  { to: "/review", label: "Review", title: "Review queue" },
   { to: "/leaderboard", label: "Leaderboard", title: "Model leaderboard" },
   { to: "/routing-log", label: "Routing log", title: "Routing log" },
 ];
@@ -37,7 +39,9 @@ function AccountControl() {
     onSettled: () => {
       queryClient.setQueryData(SESSION_KEY, { logged_in: false });
       // What only the owner may see leaves the browser's memory too.
-      queryClient.removeQueries({ queryKey: ["routing-log"] });
+      queryClient.removeQueries({
+        predicate: (query) => !["session", "leaderboard"].includes(String(query.queryKey[0])),
+      });
     },
   });
 
@@ -68,7 +72,7 @@ function Navigation() {
             <NavLink
               to={page.to}
               className={({ isActive }) =>
-                `inline-flex min-h-10 items-center rounded-control px-3 font-medium whitespace-nowrap no-underline transition-colors duration-150 ${
+                `inline-flex min-h-10 items-center rounded-control px-2 font-medium whitespace-nowrap no-underline transition-colors duration-150 sm:px-3 ${
                   isActive
                     ? "bg-accent-subtle text-accent-strong"
                     : "text-text-2 hover:bg-surface hover:text-text"

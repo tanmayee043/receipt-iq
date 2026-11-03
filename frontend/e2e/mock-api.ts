@@ -113,8 +113,138 @@ export const WORST_CASE = [
   routedDocument(7, { status: "processing", attempts: [{ provider: "new-model", outcome: "something_new", reason: "", seconds: 1 }] }),
 ];
 
+export const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+export const RECEIPT = {
+  vendor: "Warung Makan",
+  currency: "IDR",
+  items: [
+    { name: "ICED TEA", quantity: "2", unit_price: "5000", total_price: "10000", discount: null },
+    { name: "FRIED RICE", quantity: "1", unit_price: null, total_price: "25000", discount: null },
+  ],
+  subtotal: "35000",
+  discount: null,
+  service_charge: null,
+  tax: null,
+  tip: null,
+  total: "53000",
+};
+
+const totalIssue = {
+  code: "total_mismatch",
+  message: "subtotal - discount + service + tax + tip = 35000, total says 53000",
+  expected: "35000",
+  actual: "53000",
+  location: "total",
+};
+const lineIssue = {
+  code: "line_arithmetic",
+  message: "'ICED TEA': 2 x 5000 should be 10000, receipt says 11000",
+  expected: "10000",
+  actual: "11000",
+  location: "items[0]",
+};
+
+export const FLAGGED_RECEIPT = routedDocument(11, {
+  status: "needs_review",
+  receipt: RECEIPT,
+  issues: [totalIssue, lineIssue],
+});
+export const PASSED_RECEIPT = routedDocument(12, {
+  receipt: { ...RECEIPT, total: "35000" },
+});
+export const DEAD_RECEIPT = routedDocument(13, {
+  status: "dead_letter",
+  provider: "auto",
+  attempts: [],
+  seconds: null,
+  failure_kind: "retries_exhausted",
+  failure_reason: "gave up after 5 retries: every provider was busy",
+});
+export const FAILED_RECEIPT = routedDocument(14, {
+  status: "failed",
+  provider: "auto",
+  attempts: [],
+  seconds: null,
+  failure_kind: "task_failed",
+  failure_reason: "RuntimeError: set the provider's key",
+});
+
+/**
+ * A small stand-in for the document endpoints, keeping state across requests. A correction
+ * with the total still wrong is refused until confirmed, as on the real server.
+ */
+export async function mockDocuments(page: Page, documents: Record<string, unknown>[]) {
+  const store = new Map(documents.map((document) => [document.digest as string, { ...document }]));
+  const uploads: { localOnly: boolean }[] = [];
+  const save = (digest: string, changes: Record<string, unknown>) => {
+    const updated = {
+      ...store.get(digest),
+      ...changes,
+      updated_at: new Date().toISOString(),
+    };
+    store.set(digest, updated);
+    return updated;
+  };
+
+  await page.route(/\/api\/documents(\/|$)/, async (route) => {
+    const request = route.request();
+    const parts = new URL(request.url()).pathname.split("/").slice(3);
+    const digest = parts[0];
+
+    if (!digest) {
+      const body = request.postDataBuffer()?.toString("latin1") ?? "";
+      uploads.push({ localOnly: body.includes('name="local_only"') });
+      return json(route, { ...(documents[0] as object) }, 202);
+    }
+    const document = store.get(digest);
+    if (!document) return apiError(route, 404, "not_found", "There's no receipt with that hash.");
+    if (parts[1] === "image") {
+      return route.fulfill({ status: 200, contentType: "image/png", body: PNG });
+    }
+    if (parts[1] === "correction") {
+      const body = request.postDataJSON() as {
+        receipt: { total: string };
+        confirm_mismatch: boolean;
+      };
+      const addsUp = body.receipt.total === "35000";
+      if (!addsUp && !body.confirm_mismatch) {
+        return json(
+          route,
+          {
+            error: {
+              code: "correction_rejected",
+              message: "That correction doesn't add up. Confirm it if the receipt itself is misprinted.",
+              details: { issues: [`total says ${body.receipt.total}`] },
+            },
+          },
+          422,
+        );
+      }
+      return json(
+        route,
+        save(digest, {
+          status: "corrected",
+          corrected_receipt: body.receipt,
+          confirmed_mismatch: !addsUp,
+        }),
+      );
+    }
+    if (parts[1] === "dismissal") {
+      const { reason } = request.postDataJSON() as { reason: string };
+      return json(route, save(digest, { status: "dismissed", failure_reason: reason }));
+    }
+    return json(route, document);
+  });
+  return { uploads, store, save };
+}
+
 interface Mock {
   loggedIn?: boolean;
+  reviewQueue?: (route: Route) => Promise<void>;
   leaderboard?: (route: Route) => Promise<void>;
   routingLog?: (route: Route) => Promise<void>;
 }
@@ -146,6 +276,11 @@ export async function mockApi(page: Page, mock: Mock = {}) {
     }
     if (path === "/api/leaderboard") {
       return mock.leaderboard ? mock.leaderboard(route) : json(route, LEADERBOARD);
+    }
+    if (path === "/api/review-queue") {
+      if (!loggedIn) return apiError(route, 401, "not_logged_in", "Log in first.");
+      if (mock.reviewQueue) return mock.reviewQueue(route);
+      return json(route, { items: [], next_cursor: null });
     }
     if (path === "/api/routing-log") {
       if (!loggedIn) return apiError(route, 401, "not_logged_in", "Log in first.");
