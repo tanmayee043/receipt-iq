@@ -39,10 +39,34 @@ export interface Attempt {
   seconds: number;
 }
 
+export interface LineItem {
+  name: string;
+  quantity: string;
+  unit_price: string | null;
+  total_price: string;
+  discount: string | null;
+}
+
+/** Money stays a string, so it's never rounded by floating point on the way through. */
+export interface Receipt {
+  vendor: string | null;
+  currency: string | null;
+  items: LineItem[];
+  subtotal: string | null;
+  discount: string | null;
+  service_charge: string | null;
+  tax: string | null;
+  tip: string | null;
+  total: string;
+}
+
 export interface RoutedDocument {
   digest: string;
   status: string;
   provider: string | null;
+  receipt: Receipt | null;
+  corrected_receipt: Receipt | null;
+  confirmed_mismatch: boolean;
   issues: Issue[];
   attempts: Attempt[];
   met_target: boolean | null;
@@ -50,6 +74,7 @@ export interface RoutedDocument {
   failure_kind: string | null;
   failure_reason: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface DocumentPage {
@@ -60,11 +85,13 @@ export interface DocumentPage {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly details: unknown;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, details?: unknown) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -79,11 +106,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const error = (body as { error?: { code?: string; message?: string } } | null)?.error;
+    const error = (
+      body as { error?: { code?: string; message?: string; details?: unknown } } | null
+    )?.error;
     throw new ApiError(
       response.status,
       error?.code ?? "unknown",
       error?.message ?? `The server answered ${response.status}.`,
+      error?.details,
     );
   }
   return body as T;
@@ -106,4 +136,32 @@ export const api = {
     const query = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
     return request<DocumentPage>(`/routing-log?limit=25${query}`);
   },
+  reviewQueue: (cursor: string | null) => {
+    const query = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+    return request<DocumentPage>(`/review-queue?limit=25${query}`);
+  },
+  document: (digest: string) => request<RoutedDocument>(`/documents/${digest}`),
+  upload: (image: Blob, localOnly: boolean) => {
+    const form = new FormData();
+    form.append("file", image, "receipt");
+    if (localOnly) form.append("local_only", "true");
+    return request<RoutedDocument>("/documents", { method: "POST", body: form });
+  },
+  /** Runs extraction again on a stored image, for a receipt that has no answer. */
+  retry: async (digest: string) => {
+    const stored = await fetch(imageUrl(digest));
+    if (!stored.ok) throw new ApiError(stored.status, "image_unavailable", "Couldn't reload that image.");
+    return api.upload(await stored.blob(), false);
+  },
+  correct: (digest: string, receipt: unknown, confirmMismatch: boolean) =>
+    post<RoutedDocument>(`/documents/${digest}/correction`, {
+      receipt,
+      confirm_mismatch: confirmMismatch,
+    }),
+  dismiss: (digest: string, reason: string) =>
+    post<RoutedDocument>(`/documents/${digest}/dismissal`, { reason }),
 };
+
+export function imageUrl(digest: string): string {
+  return `/api/documents/${digest}/image`;
+}

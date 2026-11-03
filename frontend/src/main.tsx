@@ -9,7 +9,10 @@ import "./index.css";
 import { LeaderboardPage } from "./pages/LeaderboardPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { ReceiptPage } from "./pages/ReceiptPage";
+import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 import { RoutingLogPage } from "./pages/RoutingLogPage";
+import { UploadPage } from "./pages/UploadPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -31,6 +34,9 @@ if (root) {
           <Routes>
             <Route element={<Layout />}>
               <Route index element={<Navigate to="/leaderboard" replace />} />
+              <Route path="upload" element={<UploadPage />} />
+              <Route path="review" element={<ReviewQueuePage />} />
+              <Route path="receipts/:digest" element={<ReceiptPage />} />
               <Route path="leaderboard" element={<LeaderboardPage />} />
               <Route path="routing-log" element={<RoutingLogPage />} />
               <Route path="login" element={<LoginPage />} />

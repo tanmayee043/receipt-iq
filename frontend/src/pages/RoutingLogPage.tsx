@@ -1,35 +1,16 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { Fragment, useId, useState } from "react";
+import { useId, useState } from "react";
+import { Link } from "react-router";
 
 import { api, ApiError, type RoutedDocument } from "../api";
-import { ArrowIcon, ChevronIcon } from "../components/Icons";
-import { LoginForm } from "../components/LoginForm";
+import { ChevronIcon } from "../components/Icons";
+import { RequireLogin } from "../components/RequireLogin";
+import { RoutePath } from "../components/RoutePath";
 import { Button, EmptyState, ErrorState, PageHeading, Skeleton } from "../components/States";
 import { StatusBadge } from "../components/StatusBadge";
-import { dateTime, outcomeWord, providerName, seconds, shortName } from "../format";
-import { useLoggedIn } from "../session";
+import { dateTime, outcomeWord, providerName, seconds } from "../format";
 
 const ROW_GRID = "sm:grid-cols-[1.25rem_7.5rem_7.5rem_8rem_minmax(0,1fr)_3.75rem]";
-
-function RoutePath({ document }: { document: RoutedDocument }) {
-  return (
-    <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-      {document.attempts.map((attempt, index) => (
-        <Fragment key={`${attempt.provider}-${index}`}>
-          {index > 0 && (
-            <li aria-hidden="true" className="text-text-2">
-              <ArrowIcon />
-            </li>
-          )}
-          <li>
-            {shortName(attempt.provider)}{" "}
-            <span className="text-text-2">{outcomeWord(attempt.outcome)}</span>
-          </li>
-        </Fragment>
-      ))}
-    </ol>
-  );
-}
 
 function Details({ document, id }: { document: RoutedDocument; id: string }) {
   return (
@@ -76,6 +57,11 @@ function Details({ document, id }: { document: RoutedDocument; id: string }) {
           Only a provider missing the accuracy target or speed limit could answer this one.
         </p>
       )}
+      <p>
+        <Link to={`/receipts/${document.digest}`} className="font-medium text-accent underline">
+          Open this receipt
+        </Link>
+      </p>
     </div>
   );
 }
@@ -109,7 +95,7 @@ function Row({ document }: { document: RoutedDocument }) {
           {document.digest.slice(0, 10)}
         </span>
         <span className="col-start-2 col-span-2 sm:order-5 sm:col-span-1 sm:col-start-auto">
-          <RoutePath document={document} />
+          <RoutePath attempts={document.attempts} />
         </span>
       </button>
       {open && <Details document={document} id={detailsId} />}
@@ -197,24 +183,18 @@ function RoutingLog() {
 }
 
 export function RoutingLogPage() {
-  const loggedIn = useLoggedIn();
   return (
     <>
       <PageHeading title="Routing log">
         Which provider handled each receipt and why, newest first. A row shows the latest run of
         that image.
       </PageHeading>
-      {loggedIn === undefined && <LoadingRows />}
-      {loggedIn === false && (
-        <section className="rounded-control border border-border bg-surface px-5 py-6">
-          <h2 className="text-base font-semibold">Log in to see the routing log</h2>
-          <p className="mt-1 mb-4 max-w-prose text-text-2">
-            It lists real uploads, so it's only open to the owner. The leaderboard is public.
-          </p>
-          <LoginForm />
-        </section>
-      )}
-      {loggedIn && <RoutingLog />}
+      <RequireLogin
+        title="Log in to see the routing log"
+        why="It lists real uploads, so it's only open to the owner. The leaderboard is public."
+      >
+        <RoutingLog />
+      </RequireLogin>
     </>
   );
 }
