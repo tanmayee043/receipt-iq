@@ -1,0 +1,219 @@
+[
+ {
+  "id": "sample-1",
+  "source": "validation-000",
+  "title": "An easy one (1)",
+  "note": "The cheapest provider read it, and the numbers added up.",
+  "status": "passed",
+  "provider": "gpt",
+  "receipt": {
+   "vendor": null,
+   "currency": null,
+   "items": [
+    {
+     "name": "REAL GANACHE",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "16500",
+     "discount": null
+    },
+    {
+     "name": "EGG TART",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "13000",
+     "discount": null
+    },
+    {
+     "name": "PIZZA TOAST",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "16000",
+     "discount": null
+    }
+   ],
+   "subtotal": null,
+   "discount": null,
+   "service_charge": null,
+   "tax": null,
+   "tip": null,
+   "total": "45500"
+  },
+  "issues": [],
+  "attempts": [
+   {
+    "provider": "gpt",
+    "outcome": "passed",
+    "reason": "",
+    "seconds": 9.74465769995004
+   }
+  ],
+  "seconds": 9.74465769995004
+ },
+ {
+  "id": "sample-2",
+  "source": "validation-011",
+  "title": "An easy one (2)",
+  "note": "The cheapest provider read it, and the numbers added up.",
+  "status": "passed",
+  "provider": "gpt",
+  "receipt": {
+   "vendor": null,
+   "currency": null,
+   "items": [
+    {
+     "name": "Se'I Sapi Sambal Matah ( R )",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "20000",
+     "discount": null
+    },
+    {
+     "name": "Se'I Sapi Lada Hitam (J)",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "35000",
+     "discount": null
+    },
+    {
+     "name": "Nasi Putih",
+     "quantity": "2",
+     "unit_price": null,
+     "total_price": "10000",
+     "discount": null
+    },
+    {
+     "name": "Milk Shake Coklat",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "16000",
+     "discount": null
+    }
+   ],
+   "subtotal": "81000",
+   "discount": null,
+   "service_charge": null,
+   "tax": "8100",
+   "tip": null,
+   "total": "89100"
+  },
+  "issues": [],
+  "attempts": [
+   {
+    "provider": "gpt",
+    "outcome": "passed",
+    "reason": "",
+    "seconds": 10.061003800015897
+   }
+  ],
+  "seconds": 10.061003800015897
+ },
+ {
+  "id": "sample-3",
+  "source": "validation-006",
+  "title": "A second opinion",
+  "note": "The first answer didn't add up, so the router asked another provider.",
+  "status": "passed",
+  "provider": "gemini",
+  "receipt": {
+   "vendor": null,
+   "currency": null,
+   "items": [
+    {
+     "name": "POTATO SAUSAGE BREAD",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "19000",
+     "discount": null
+    },
+    {
+     "name": "OREO GREEN TEA SPREAD",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "52000",
+     "discount": null
+    },
+    {
+     "name": "WHITE CHOCO BANANA SPREAD",
+     "quantity": "1",
+     "unit_price": null,
+     "total_price": "52000",
+     "discount": null
+    }
+   ],
+   "subtotal": null,
+   "discount": null,
+   "service_charge": null,
+   "tax": null,
+   "tip": null,
+   "total": "123000"
+  },
+  "issues": [],
+  "attempts": [
+   {
+    "provider": "gpt",
+    "outcome": "needs_review",
+    "reason": "",
+    "seconds": 10.408601200091653
+   },
+   {
+    "provider": "gemini",
+    "outcome": "passed",
+    "reason": "",
+    "seconds": 6.649305899976753
+   }
+  ],
+  "seconds": 17.057907100068405
+ },
+ {
+  "id": "sample-4",
+  "source": "validation-007",
+  "title": "One for a person",
+  "note": "The answers didn't add up, so it went to the review queue. Try fixing it.",
+  "status": "needs_review",
+  "provider": "gemini",
+  "receipt": {
+   "vendor": null,
+   "currency": null,
+   "items": [
+    {
+     "name": "Choco Devil",
+     "quantity": "4",
+     "unit_price": null,
+     "total_price": "63636",
+     "discount": "9545"
+    }
+   ],
+   "subtotal": "63636",
+   "discount": "9545",
+   "service_charge": null,
+   "tax": "5409",
+   "tip": null,
+   "total": "59500"
+  },
+  "issues": [
+   {
+    "code": "items_vs_subtotal",
+    "message": "line items add up to 54091, subtotal says 63636 (or 69045 with tax)",
+    "expected": "54091",
+    "actual": "63636",
+    "location": "subtotal"
+   }
+  ],
+  "attempts": [
+   {
+    "provider": "gpt",
+    "outcome": "needs_review",
+    "reason": "",
+    "seconds": 8.992508299998008
+   },
+   {
+    "provider": "gemini",
+    "outcome": "needs_review",
+    "reason": "",
+    "seconds": 18.284902000043076
+   }
+  ],
+  "seconds": 27.277410300041083
+ }
+]

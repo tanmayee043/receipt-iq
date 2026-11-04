@@ -3,6 +3,7 @@
 Celery running in-process means an upload has finished by the time the POST returns.
 """
 
+import json
 from collections.abc import Callable, Iterator
 from decimal import Decimal
 from io import BytesIO
@@ -573,6 +574,84 @@ def test_app_starts_without_built_screens(tmp_path: Path) -> None:
     client = make_client(frontend_dist=tmp_path / "not-built")
     assert client.get("/healthz").status_code == 200
     assert client.get("/leaderboard").status_code == 404
+
+
+@pytest.fixture
+def demo(tmp_path: Path) -> TestClient:
+    folder = tmp_path / "demo"
+    (folder / "images").mkdir(parents=True)
+    (folder / "images" / "sample-1.jpg").write_bytes(b"jpeg bytes")
+    (tmp_path / "secret.jpg").write_bytes(b"private")
+    sample = {
+        "id": "sample-1",
+        "source": "validation-001",
+        "title": "An easy one",
+        "note": "It added up.",
+        "status": "passed",
+        "provider": "gpt",
+        "receipt": GOOD.model_dump(mode="json"),
+        "issues": [],
+        "attempts": [{"provider": "gpt", "outcome": "passed", "reason": "", "seconds": 8.3}],
+        "seconds": 8.3,
+    }
+    (folder / "samples.json").write_text(json.dumps([sample]), encoding="utf-8")
+    return make_client(demo_dir=folder)
+
+
+def test_demo_needs_no_login_and_never_reaches_a_provider(
+    demo: TestClient, providers: Callable[..., FakeProvider]
+) -> None:
+    provider = providers(GOOD)
+    samples = demo.get("/api/demo/samples").json()
+    assert [sample["id"] for sample in samples] == ["sample-1"]
+    assert demo.get("/api/demo/samples/sample-1/image").content == b"jpeg bytes"
+    assert demo.post("/api/demo/check", json=FIXED_BODY).json() == {"passed": True, "issues": []}
+    assert provider.calls == 0
+    assert "source" not in samples[0]
+
+
+def test_demo_image_only_reaches_listed_samples(demo: TestClient) -> None:
+    assert demo.get("/api/demo/samples/sample-2/image").status_code == 404
+    assert demo.get("/api/demo/samples/..%2F..%2Fsecret/image").status_code == 404
+    assert demo.get("/api/demo/samples/secret/image").status_code == 404
+
+
+def test_demo_check_runs_the_real_validator_and_saves_nothing(demo: TestClient) -> None:
+    body = {"receipt": BAD_MATH.model_dump(mode="json")}
+    result = demo.post("/api/demo/check", json=body).json()
+    assert result["passed"] is False
+    assert "total says 9000" in result["issues"][0]
+    assert demo.post("/api/demo/check", json={"receipt": {"total": "-1"}}).status_code == 422
+    with session_scope() as session:
+        assert get_document(session, DIGEST) is None
+    client = make_client()
+    client.post("/api/login", json={"password": PASSWORD})
+    assert client.get("/api/routing-log").json()["items"] == []
+
+
+def test_demo_is_rate_limited(tmp_path: Path) -> None:
+    client = make_client(rate_limit_general=1, demo_dir=tmp_path)
+    assert client.get("/api/demo/samples").status_code == 200
+    assert client.get("/api/demo/samples").status_code == 429
+
+
+def test_demo_with_no_samples_built_is_an_empty_list(tmp_path: Path) -> None:
+    client = make_client(demo_dir=tmp_path / "not-built")
+    assert client.get("/api/demo/samples").json() == []
+    assert client.get("/api/demo/samples/sample-1/image").status_code == 404
+
+
+def test_the_committed_samples_match_the_api_and_have_images() -> None:
+    client = make_client()
+    samples = client.get("/api/demo/samples")
+    assert samples.status_code == 200
+    assert len(samples.json()) >= 3
+    assert {"passed", "needs_review"} <= {sample["status"] for sample in samples.json()}
+    for sample in samples.json():
+        image = client.get(f"/api/demo/samples/{sample['id']}/image")
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/jpeg"
+        assert len(image.content) < 1024 * 1024
 
 
 def test_general_rate_limit_answers_429_with_a_wait() -> None:

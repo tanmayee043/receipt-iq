@@ -2,12 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 
-import { api, ApiError, type RoutedDocument } from "../api";
+import { api, ApiError, imageUrl, type Receipt as ReceiptData, type RoutedDocument } from "../api";
 import { ReceiptEditor } from "../components/ReceiptEditor";
 import { ReceiptImage } from "../components/ReceiptImage";
 import { ReceiptView } from "../components/ReceiptView";
 import { RequireLogin } from "../components/RequireLogin";
 import { RoutePath } from "../components/RoutePath";
+import { SplitBill } from "../components/SplitBill";
 import { Button, ErrorState, PageHeading, Skeleton } from "../components/States";
 import { StatusBadge } from "../components/StatusBadge";
 import { providerName, seconds } from "../format";
@@ -112,6 +113,12 @@ function Summary({ document }: { document: RoutedDocument }) {
 
 function Panel({ document, onSaved }: { document: RoutedDocument; onSaved: (saved: RoutedDocument) => void }) {
   const [editing, setEditing] = useState(false);
+  const saveCorrection = async (receipt: ReceiptData, confirmMismatch: boolean) => {
+    onSaved(await api.correct(document.digest, receipt, confirmMismatch));
+  };
+  const editor = (
+    <ReceiptEditor receipt={document.receipt} issues={document.issues} onSave={saveCorrection} />
+  );
   const toQueue = (
     <Link to="/review" className="font-medium text-accent underline">
       Back to the review queue
@@ -157,6 +164,9 @@ function Panel({ document, onSaved }: { document: RoutedDocument; onSaved: (save
               </div>
             </details>
           )}
+          {document.corrected_receipt && (
+            <SplitBill receipt={document.corrected_receipt} storageKey={document.digest} />
+          )}
           <p>{toQueue}</p>
         </div>
       );
@@ -172,7 +182,7 @@ function Panel({ document, onSaved }: { document: RoutedDocument; onSaved: (save
       );
     case "passed":
       return editing ? (
-        <ReceiptEditor document={document} onSaved={onSaved} />
+        editor
       ) : (
         <div className="grid gap-4">
           <ReceiptView receipt={document.receipt ?? emptyReceipt()} />
@@ -182,6 +192,9 @@ function Panel({ document, onSaved }: { document: RoutedDocument; onSaved: (save
           <div>
             <Button onClick={() => setEditing(true)}>Correct this</Button>
           </div>
+          {document.receipt && (
+            <SplitBill receipt={document.receipt} storageKey={document.digest} />
+          )}
         </div>
       );
     default:
@@ -197,7 +210,7 @@ function Panel({ document, onSaved }: { document: RoutedDocument; onSaved: (save
               <RetryButton digest={document.digest} onSaved={onSaved} />
             </div>
           )}
-          <ReceiptEditor document={document} onSaved={onSaved} />
+          {editor}
           <div>
             <DismissForm digest={document.digest} onSaved={onSaved} />
           </div>
@@ -258,7 +271,7 @@ function Receipt({ digest }: { digest: string }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
       <div className="lg:sticky lg:top-4">
-        <ReceiptImage digest={digest} />
+        <ReceiptImage src={imageUrl(digest)} />
       </div>
       <div className="min-w-0">
         <Summary document={document} />

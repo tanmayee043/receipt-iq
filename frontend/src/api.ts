@@ -82,6 +82,19 @@ export interface DocumentPage {
   next_cursor: string | null;
 }
 
+/** A saved answer to a sample receipt, shown without calling any provider. */
+export interface DemoSample {
+  id: string;
+  title: string;
+  note: string;
+  status: string;
+  provider: string;
+  receipt: Receipt;
+  issues: Issue[];
+  attempts: Attempt[];
+  seconds: number;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -160,7 +173,15 @@ export const api = {
     }),
   dismiss: (digest: string, reason: string) =>
     post<RoutedDocument>(`/documents/${digest}/dismissal`, { reason }),
+  demoSamples: () => request<DemoSample[]>("/demo/samples"),
+  /** Runs the real validator on a visitor's edit. Nothing is saved. */
+  demoCheck: (receipt: Receipt) =>
+    post<{ passed: boolean; issues: string[] }>("/demo/check", { receipt }),
 };
+
+export function demoImageUrl(id: string): string {
+  return `/api/demo/samples/${id}/image`;
+}
 
 export function imageUrl(digest: string): string {
   return `/api/documents/${digest}/image`;

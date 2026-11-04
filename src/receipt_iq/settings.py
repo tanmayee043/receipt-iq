@@ -42,6 +42,8 @@ class ApiSettings(Settings):
     rate_limit_login: int = 5
     # The built screens (npm run build). Served if present; the API works without them.
     frontend_dist: Path = Path("frontend/dist")
+    # The sample receipts visitors can try (scripts/build_demo.py).
+    demo_dir: Path = Path("demo")
 
 
 def get_settings() -> Settings:

@@ -1,9 +1,8 @@
 import { useState } from "react";
 
-import { imageUrl } from "../api";
 import { Button } from "./States";
 
-export function ReceiptImage({ digest }: { digest: string }) {
+export function ReceiptImage({ src }: { src: string }) {
   const [zoomed, setZoomed] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -24,7 +23,7 @@ export function ReceiptImage({ digest }: { digest: string }) {
         className="max-h-[75vh] overflow-auto rounded-control border border-border bg-surface"
       >
         <img
-          src={imageUrl(digest)}
+          src={src}
           alt="The uploaded receipt"
           onError={() => setFailed(true)}
           className={zoomed ? "w-[220%] max-w-none" : "mx-auto w-full"}

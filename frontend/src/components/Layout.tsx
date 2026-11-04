@@ -7,11 +7,13 @@ import { SESSION_KEY, useLoggedIn } from "../session";
 import { useTheme } from "../theme";
 import { MoonIcon, SunIcon } from "./Icons";
 
+// Visitors only see links they can use; the owner's pages would just ask them to log in.
 const PAGES = [
-  { to: "/upload", label: "Upload", title: "Upload a receipt" },
-  { to: "/review", label: "Review", title: "Review queue" },
-  { to: "/leaderboard", label: "Leaderboard", title: "Model leaderboard" },
-  { to: "/routing-log", label: "Routing log", title: "Routing log" },
+  { to: "/demo", label: "Demo", title: "Demo", owner: false },
+  { to: "/upload", label: "Upload", title: "Upload a receipt", owner: true },
+  { to: "/review", label: "Review", title: "Review queue", owner: true },
+  { to: "/leaderboard", label: "Leaderboard", title: "Model leaderboard", owner: false },
+  { to: "/routing-log", label: "Routing log", title: "Routing log", owner: true },
 ];
 
 function ThemeToggle() {
@@ -64,10 +66,11 @@ function AccountControl() {
 }
 
 function Navigation() {
+  const loggedIn = useLoggedIn();
   return (
     <nav aria-label="Main">
       <ul className="flex gap-1">
-        {PAGES.map((page) => (
+        {PAGES.filter((page) => loggedIn || !page.owner).map((page) => (
           <li key={page.to}>
             <NavLink
               to={page.to}
