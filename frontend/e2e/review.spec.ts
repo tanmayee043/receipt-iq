@@ -59,7 +59,7 @@ test.describe("upload", () => {
       attempts: PASSED_RECEIPT.attempts,
       seconds: 8.3,
     });
-    await expect(page.getByText("FRIED RICE")).toBeVisible({ timeout: 6000 });
+    await expect(page.getByText("FRIED RICE").first()).toBeVisible({ timeout: 6000 });
     await expect(page.getByText("Answered by GPT-5 mini")).toBeVisible();
     expect(documents.uploads[0]?.localOnly).toBe(false);
   });
@@ -176,7 +176,7 @@ test.describe("correcting a receipt", () => {
     await expect(page.getByRole("heading", { name: "Corrected answer" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Save correction" })).toHaveCount(0);
     await page.getByText("The model's answer").click();
-    await expect(page.getByText("53000")).toBeVisible();
+    await expect(page.getByText("53,000")).toBeVisible();
     await expect(page.getByRole("link", { name: "Back to the review queue" })).toBeVisible();
   });
 

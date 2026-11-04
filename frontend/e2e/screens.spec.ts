@@ -17,8 +17,7 @@ async function screenshot(page: Page, name: string, projectName: string) {
 test.describe("leaderboard", () => {
   test("says what the router does and how far to trust the numbers", async ({ page }) => {
     await mockApi(page);
-    await page.goto("/");
-    await expect(page).toHaveURL(/\/leaderboard$/);
+    await page.goto("/leaderboard");
     await expect(page).toHaveTitle("Model leaderboard · Receipt IQ");
     await expect(page.getByRole("heading", { name: "Model leaderboard", level: 1 })).toBeVisible();
     await expect(page.getByText("The router tries GPT-5 mini first")).toBeVisible();
@@ -190,7 +189,7 @@ test.describe("routing log", () => {
 
 test.describe("app shell", () => {
   test("the links move between pages and mark the current one", async ({ page }) => {
-    await mockApi(page);
+    await mockApi(page, { loggedIn: true });
     await page.goto("/leaderboard");
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect(nav.getByRole("link", { name: "Leaderboard" })).toHaveAttribute(

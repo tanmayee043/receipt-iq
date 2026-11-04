@@ -242,7 +242,36 @@ export async function mockDocuments(page: Page, documents: Record<string, unknow
   return { uploads, store, save };
 }
 
+export const DEMO_SAMPLES = [
+  {
+    id: "sample-1",
+    title: "An easy one",
+    note: "The cheapest provider read it, and the numbers added up.",
+    status: "passed",
+    provider: "gpt",
+    receipt: { ...RECEIPT, total: "35000" },
+    issues: [],
+    attempts: [{ provider: "gpt", outcome: "passed", reason: "", seconds: 8.3 }],
+    seconds: 8.3,
+  },
+  {
+    id: "sample-2",
+    title: "One for a person",
+    note: "The answers didn't add up, so it went to the review queue. Try fixing it.",
+    status: "needs_review",
+    provider: "gemini",
+    receipt: RECEIPT,
+    issues: [totalIssue],
+    attempts: [
+      { provider: "gpt", outcome: "needs_review", reason: "", seconds: 8.3 },
+      { provider: "gemini", outcome: "needs_review", reason: "", seconds: 11.8 },
+    ],
+    seconds: 20.1,
+  },
+];
+
 interface Mock {
+  demoSamples?: (route: Route) => Promise<void>;
   loggedIn?: boolean;
   reviewQueue?: (route: Route) => Promise<void>;
   leaderboard?: (route: Route) => Promise<void>;
@@ -276,6 +305,17 @@ export async function mockApi(page: Page, mock: Mock = {}) {
     }
     if (path === "/api/leaderboard") {
       return mock.leaderboard ? mock.leaderboard(route) : json(route, LEADERBOARD);
+    }
+    if (path === "/api/demo/samples") {
+      return mock.demoSamples ? mock.demoSamples(route) : json(route, DEMO_SAMPLES);
+    }
+    if (path.startsWith("/api/demo/samples/")) {
+      return route.fulfill({ status: 200, contentType: "image/png", body: PNG });
+    }
+    if (path === "/api/demo/check") {
+      const { receipt } = request.postDataJSON() as { receipt: { total: string } };
+      const passed = receipt.total === "35000";
+      return json(route, { passed, issues: passed ? [] : [`total says ${receipt.total}`] });
     }
     if (path === "/api/review-queue") {
       if (!loggedIn) return apiError(route, 401, "not_logged_in", "Log in first.");

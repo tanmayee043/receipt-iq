@@ -47,6 +47,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from receipt_iq.db import FAILED, Document, session_scope
 from receipt_iq.review import (
+    TOLERANCE,
     CorrectionRejected,
     Cursor,
     DocumentNotFound,
@@ -70,6 +71,7 @@ from receipt_iq.security import (
 )
 from receipt_iq.settings import ApiSettings
 from receipt_iq.tasks import AUTO, LEADERBOARD, submit, upload_path
+from receipt_iq.validation import validate
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +192,27 @@ class LeaderboardOut(BaseModel):
     # The order the router tries providers in.
     routing_order: list[str]
     providers: list[ProviderOut]
+
+
+class DemoSampleOut(BaseModel):
+    id: str
+    title: str
+    note: str
+    status: str
+    provider: str
+    receipt: Receipt
+    issues: list[IssueOut]
+    attempts: list[AttemptOut]
+    seconds: float
+
+
+class DemoCheckIn(BaseModel):
+    receipt: Receipt
+
+
+class DemoCheckOut(BaseModel):
+    passed: bool
+    issues: list[str]
 
 
 class HealthOut(BaseModel):
@@ -444,6 +467,44 @@ def read_leaderboard() -> Any:
         "max_seconds": DEFAULT_MAX_SECONDS,
         "routing_order": [route.provider for route in order],
     }
+
+
+def _demo_samples(request: Request) -> list[dict[str, Any]]:
+    path = _settings(request).demo_dir / "samples.json"
+    if not path.exists():
+        return []
+    samples: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))
+    return samples
+
+
+@public.get("/demo/samples", response_model=list[DemoSampleOut])
+def read_demo_samples(request: Request) -> Any:
+    """Saved answers to sample receipts, so a visitor spends no provider quota."""
+    return _demo_samples(request)
+
+
+@public.get(
+    "/demo/samples/{sample_id}/image",
+    response_class=Response,
+    responses={200: {"content": {"image/jpeg": {}}}},
+)
+def read_demo_image(sample_id: str, request: Request) -> Response:
+    # Looked up among the samples, so the address can't reach any other file.
+    if not any(sample["id"] == sample_id for sample in _demo_samples(request)):
+        raise DocumentNotFound(sample_id)
+    path = _settings(request).demo_dir / "images" / f"{sample_id}.jpg"
+    return Response(
+        path.read_bytes(),
+        media_type="image/jpeg",
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=3600"},
+    )
+
+
+@public.post("/demo/check", response_model=DemoCheckOut)
+def check_demo_receipt(body: DemoCheckIn) -> DemoCheckOut:
+    """The real validator on a visitor's edit. Nothing is saved, and no provider is called."""
+    checked = validate(body.receipt, TOLERANCE)
+    return DemoCheckOut(passed=checked.passed, issues=[i.message for i in checked.issues])
 
 
 # Not rate limited: monitoring has to get through, and these must answer when Redis is down.

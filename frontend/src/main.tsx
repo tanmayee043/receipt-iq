@@ -6,6 +6,8 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { ApiError } from "./api";
 import { Layout } from "./components/Layout";
 import "./index.css";
+import { DemoPage } from "./pages/DemoPage";
+import { DemoSamplePage } from "./pages/DemoSamplePage";
 import { LeaderboardPage } from "./pages/LeaderboardPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -33,7 +35,9 @@ if (root) {
         <BrowserRouter>
           <Routes>
             <Route element={<Layout />}>
-              <Route index element={<Navigate to="/leaderboard" replace />} />
+              <Route index element={<Navigate to="/demo" replace />} />
+              <Route path="demo" element={<DemoPage />} />
+              <Route path="demo/:sampleId" element={<DemoSamplePage />} />
               <Route path="upload" element={<UploadPage />} />
               <Route path="review" element={<ReviewQueuePage />} />
               <Route path="receipts/:digest" element={<ReceiptPage />} />

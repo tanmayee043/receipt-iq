@@ -1,7 +1,7 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useId, useState } from "react";
 
-import { api, ApiError, type Issue, type RoutedDocument } from "../api";
+import { ApiError, type Issue, type Receipt } from "../api";
 import {
   AMOUNT_FIELDS,
   type AmountField,
@@ -144,25 +144,25 @@ function issuesFrom(error: unknown): string[] {
   return details?.issues ?? [];
 }
 
+/**
+ * `onSave` decides what saving means: the API for real receipts, this page's memory in the
+ * demo. It should throw an ApiError with code correction_rejected if the receipt doesn't add up.
+ */
 export function ReceiptEditor({
-  document,
-  onSaved,
+  receipt,
+  issues,
+  onSave,
 }: {
-  document: RoutedDocument;
-  onSaved: (saved: RoutedDocument) => void;
+  receipt: Receipt | null;
+  issues: Issue[];
+  onSave: (receipt: Receipt, confirmMismatch: boolean) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState(() => toDraft(document.receipt));
+  const [draft, setDraft] = useState(() => toDraft(receipt));
   const [problem, setProblem] = useState<string | null>(null);
-  const queryClient = useQueryClient();
-  const currency = document.receipt?.currency ?? null;
+  const currency = receipt?.currency ?? null;
 
   const save = useMutation({
-    mutationFn: (confirmMismatch: boolean) =>
-      api.correct(document.digest, fromDraft(draft, currency), confirmMismatch),
-    onSuccess: (saved) => {
-      void queryClient.invalidateQueries({ queryKey: ["review-queue"] });
-      onSaved(saved);
-    },
+    mutationFn: (confirmMismatch: boolean) => onSave(fromDraft(draft, currency), confirmMismatch),
   });
   const rejected = save.error instanceof ApiError && save.error.code === "correction_rejected";
 
@@ -201,7 +201,7 @@ export function ReceiptEditor({
               key={item.id}
               item={item}
               number={index + 1}
-              issues={issuesAt(document.issues, `items[${index}]`)}
+              issues={issuesAt(issues, `items[${index}]`)}
               onChange={(changed) => setItem(index, changed)}
               onRemove={
                 draft.items.length > 1
@@ -227,7 +227,7 @@ export function ReceiptEditor({
               key={field}
               label={AMOUNT_LABELS[field]}
               value={draft.amounts[field]}
-              flagged={issuesAt(document.issues, field).length > 0}
+              flagged={issuesAt(issues, field).length > 0}
               onChange={(value) => {
                 setDraft({ ...draft, amounts: { ...draft.amounts, [field]: value } });
                 save.reset();
@@ -237,7 +237,7 @@ export function ReceiptEditor({
           <Field
             label="Total"
             value={draft.total}
-            flagged={issuesAt(document.issues, "total").length > 0}
+            flagged={issuesAt(issues, "total").length > 0}
             onChange={(total) => {
               setDraft({ ...draft, total });
               save.reset();
@@ -245,7 +245,7 @@ export function ReceiptEditor({
           />
         </div>
         <IssueNotes
-          issues={document.issues.filter((issue) => !issue.location.startsWith("items["))}
+          issues={issues.filter((issue) => !issue.location.startsWith("items["))}
         />
       </fieldset>
 

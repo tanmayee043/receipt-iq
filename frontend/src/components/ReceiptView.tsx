@@ -1,11 +1,12 @@
 import type { Receipt } from "../api";
+import { grouped } from "../split";
 
 function Amount({ label, value, strong = false }: { label: string; value: string | null; strong?: boolean }) {
   if (value === null) return null;
   return (
     <div className={`flex justify-between gap-4 py-1 ${strong ? "font-semibold" : ""}`}>
       <dt className={strong ? "" : "text-text-2"}>{label}</dt>
-      <dd className="numeric">{value}</dd>
+      <dd className="numeric">{grouped(value)}</dd>
     </div>
   );
 }
@@ -27,11 +28,11 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
                 )}
                 {item.discount && (
                   <span className="block text-[13px] text-text-2">
-                    Discount <span className="numeric">{item.discount}</span>
+                    Discount <span className="numeric">{grouped(item.discount)}</span>
                   </span>
                 )}
               </span>
-              <span className="numeric">{item.total_price}</span>
+              <span className="numeric">{grouped(item.total_price)}</span>
             </li>
           ))}
         </ul>
