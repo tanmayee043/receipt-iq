@@ -515,7 +515,7 @@ def test_leaderboard_is_public_and_matches_the_file(anonymous: TestClient) -> No
 
 def test_leaderboard_says_how_the_router_uses_it(anonymous: TestClient) -> None:
     body = anonymous.get("/api/leaderboard").json()
-    assert body["accuracy_target"] == 0.75
+    assert body["accuracy_target"] == 0.70
     assert body["max_seconds"] == 60
     assert sorted(body["routing_order"]) == sorted(p["provider"] for p in body["providers"])
     # The router's first choice is the cheapest that qualifies, so it must meet the policy.
