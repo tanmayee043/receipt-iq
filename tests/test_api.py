@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,7 +19,7 @@ from pydantic import ValidationError
 from redis import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from receipt_iq import api, tasks
+from receipt_iq import api, security, tasks
 from receipt_iq.api import MAX_BODY_BYTES, MAX_UPLOAD_BYTES, create_app
 from receipt_iq.db import PROCESSING, session_scope
 from receipt_iq.evaluation import TemporaryError
@@ -31,6 +32,7 @@ from receipt_iq.settings import ApiSettings, get_settings
 PASSWORD = "correct horse battery staple"
 PASSWORD_HASH = hash_password(PASSWORD)
 TEST_REDIS_DB = 15
+FROZEN_TIME = 1_800_000_000.0
 GOOD = Receipt(items=[LineItem(name="TEA", total_price=Decimal(5000))], total=Decimal(5000))
 BAD_MATH = Receipt(items=[LineItem(name="TEA", total_price=Decimal(5000))], total=Decimal(9000))
 FIXED_BODY = {"receipt": GOOD.model_dump(mode="json")}
@@ -90,6 +92,8 @@ def make_settings(**overrides: Any) -> ApiSettings:
 @pytest.fixture(autouse=True)
 def eager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: None) -> Iterator[None]:
     monkeypatch.setenv("RECEIPT_IQ_DATA", str(tmp_path))
+    # A test crossing a minute boundary would get a fresh rate-limit window and fail by chance.
+    monkeypatch.setattr(security, "time", SimpleNamespace(time=lambda: FROZEN_TIME))
     Redis.from_url(f"{get_settings().redis_url}/{TEST_REDIS_DB}").flushdb()
     tasks.app.conf.update(task_always_eager=True, task_eager_propagates=False)
     tasks.get_extractor.cache_clear()
@@ -515,7 +519,7 @@ def test_leaderboard_is_public_and_matches_the_file(anonymous: TestClient) -> No
 
 def test_leaderboard_says_how_the_router_uses_it(anonymous: TestClient) -> None:
     body = anonymous.get("/api/leaderboard").json()
-    assert body["accuracy_target"] == 0.75
+    assert body["accuracy_target"] == 0.70
     assert body["max_seconds"] == 60
     assert sorted(body["routing_order"]) == sorted(p["provider"] for p in body["providers"])
     # The router's first choice is the cheapest that qualifies, so it must meet the policy.
@@ -652,6 +656,15 @@ def test_the_committed_samples_match_the_api_and_have_images() -> None:
         assert image.status_code == 200
         assert image.headers["content-type"] == "image/jpeg"
         assert len(image.content) < 1024 * 1024
+
+
+def test_rate_limit_opens_again_in_the_next_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client(rate_limit_general=1)
+    assert client.get("/api/leaderboard").status_code == 200
+    assert client.get("/api/leaderboard").status_code == 429
+    later = SimpleNamespace(time=lambda: FROZEN_TIME + security.WINDOW_SECONDS)
+    monkeypatch.setattr(security, "time", later)
+    assert client.get("/api/leaderboard").status_code == 200
 
 
 def test_general_rate_limit_answers_429_with_a_wait() -> None:

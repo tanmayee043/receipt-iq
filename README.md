@@ -128,8 +128,8 @@ Model choice, checked on a new free-tier account (Oct 2026): `gemini-2.5-flash` 
 accounts, and `gemini-3.8-flash` never answered (a one-word reply hung for 3 minutes). The model
 is pinned rather than an alias like `gemini-flash-latest`, so runs stay comparable.
 
-**Partial result so far: 87 of 98 validation receipts** (the comparison tables below use the first 57). The free daily quota
-has ranged from 9 to 21 requests, so the full run is being completed day by day from the cache.
+**All 98 validation receipts are done.** The free daily quota ranged from 9 to 21 requests, so the
+run took several days, resuming from the cache each time. Results are in the comparison below.
 
 ```bash
 python scripts/evaluate.py gemini        # needs GEMINI_API_KEY; re-run daily to resume
@@ -239,29 +239,33 @@ quota, and neither does `gpt-4o-mini` in the allowed region, so it runs `gpt-5-m
   despite the prompt's number rules. The amounts still added up, so the validator passed them,
   the same blind spot as Azure's "8.000".
 
-### All five on the same 57 receipts
+### All five on all 98 validation receipts
 
 | Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B | Azure | GPT-5 mini |
 |---|---|---|---|---|---|
-| Total correct | 40.4% | 98.2% | 91.2% | 89.5% | 94.7% |
-| Line items: F1 | 31.7% | 95.0% | 92.0% | 88.6% | 86.3% |
-| Fully correct receipts | 3 of 57 | 48 of 57 | 45 of 57 | 38 of 57 | 43 of 57 |
-| Failed | 1 | 1 | 5 | 3 | 3 |
-| Validator catch rate | 42.6% | 33.3% | 50.0% | 73.7% | 50.0% |
-| Median latency | 24.7 s | 11.6 s | 102.8 s | 9.0 s | 8.6 s |
+| Total correct | 35.7% | 99.0% | 89.8% | 91.8% | 92.9% |
+| Line items: F1 | 29.0% | 90.7% | 92.7% | 89.2% | 84.4% |
+| Fully correct receipts | 3 of 98 | 82 of 98 | 79 of 98 | 60 of 98 | 71 of 98 |
+| Failed | 1 | 1 | 10 | 5 | 3 |
+| Validator catch rate | 42.1% | 25.0% | 63.2% | 71.1% | 37.0% |
+| Median latency | 23.0 s | 10.4 s | 110.5 s | 9.0 s | 8.3 s |
+
+These are validation scores, used for tuning. Final scores will come from the test split.
 
 What the numbers show:
 
 - **Reading the image beats OCR + a small model** by a wide margin: no prompt fixes text that OCR
   never read.
-- **Gemini is the most accurate so far; GPT and Azure are the fastest.** Gemma is close to Gemini
-  on accuracy but about 9× slower, and most of its failures come from the free service, not from
-  reading the receipt.
+- **Gemini is the most accurate on whole receipts; GPT and Azure are the fastest.** Gemma is close
+  to Gemini, with the best line-item F1, but about 10× slower, and most of its failures come from
+  the free service, not from reading the receipt.
+- **Partial runs can mislead.** On the first 73 receipts GPT scored 78.1%; on all 98 it scored 72.4%,
+  which changed the router's best setting (see below).
 - **The same mistake from Gemini, Gemma and GPT:** an item with an empty name. A next prompt version
   should require the printed name on every item (kept for later so these runs stay comparable).
-- **A low catch rate isn't always a weak validator.** On Gemini, none of the 6 wrong receipts it
-  missed has a wrong amount: they differ in item names, a blank subtotal or extra 0-priced lines,
-  which arithmetic can't see. Azure's "8.000" bug is the opposite warning: wrong amounts that are
+- **A low catch rate isn't always a weak validator.** When checked on the first 57 receipts, none of
+  the 6 wrong Gemini receipts the validator missed had a wrong amount: they differed in item names,
+  a blank subtotal or extra 0-priced lines, which arithmetic can't see. Azure's "8.000" bug is the opposite warning: wrong amounts that are
   consistent with each other pass too.
 
 ## Task queue (`tasks.py`)
@@ -327,37 +331,43 @@ ranked providers ──► circuit breaker open? skip ──► extract ──�
                                  unavailable or failed: next    flagged: next, up to 2 answers
 ```
 
-- **Policy:** the cheapest provider that reaches 75% fully correct and answers within 60 s. Those
+- **Policy:** the cheapest provider that reaches 70% fully correct and answers within 60 s. Those
   that miss either are a last resort, most accurate first.
 - **Circuit breaker:** after 3 failures in a row a provider is skipped for 5 minutes, then gets one
   trial call. A wrong key opens it immediately.
 - **Sensitive documents:** `local_only=True` never uses anything that leaves the machine.
 - **Routing log:** every result lists each provider tried, what happened and why.
 
-**What routing is worth, replayed on the 73 receipts all providers have answered**
+**What routing is worth, replayed on all 98 validation receipts**
 (`scripts/simulate_routing.py`, no provider calls):
 
 | Policy | Fully correct | Line-item F1 | $ per 1,000 | Sent to review | Mean time |
 |---|---|---|---|---|---|
-| Always Gemini (most accurate) | 86.3% | 94.6% | 5.33 | 4.1% | 16.8 s |
-| Always GPT | 78.1% | 87.8% | 1.06 | 9.6% | 8.4 s |
-| Always Azure | 65.8% | 89.3% | 9.32 | 27.4% | 8.3 s |
-| **Router, 1 answer** | 79.5% | 91.5% | 1.33 | 6.8% | 9.1 s |
-| **Router, second opinion (default)** | 83.6% | 92.6% | 1.63 | 1.4% | 12.9 s |
+| Always Gemini (most accurate) | 83.7% | 90.7% | 5.34 | 4.1% | 16.4 s |
+| Always GPT | 72.4% | 84.4% | 1.08 | 10.2% | 8.4 s |
+| Always Azure | 61.2% | 89.2% | 9.49 | 27.6% | 8.3 s |
+| Router, 75% target, second opinion | 84.7% | 90.5% | 5.41 | 2.0% | 20.0 s |
+| Router, 70% target, 1 answer | 73.5% | 87.1% | 1.28 | 8.2% | 9.0 s |
+| **Router, 70% target, second opinion (default)** | 78.6% | 88.0% | 1.66 | 2.0% | 12.4 s |
 
-So far, the default router costs **69% less** than always using Gemini, at the price of 2 of the 73
-receipts no longer being fully correct. It's also faster, and sends fewer receipts to a person.
+The default router costs **69% less** than always using Gemini and sends half as many receipts to a
+person. The price is real: 5 of the 98 receipts are no longer fully correct, 5.1 points.
+
+**Why 70% and not 75%.** On the first 73 receipts GPT scored 78.1%, so a 75% target looked like the
+best of both: 69% cheaper for only 2 receipts. The full run put GPT at 72.4%, below that target. The
+router then tries Gemini first, which is about one receipt more accurate than always using Gemini
+but saves nothing. So 75% was a setting tuned on a partial run, and it didn't survive the full one.
 
 Read those numbers with care:
 
-- **Not final.** The router's accuracy figures come from these same receipts, so this flatters it.
-  Gemini's run is also unfinished. The final number has to come from the test split.
+- **Not final.** The router's accuracy figures and this target come from these same receipts, so
+  this flatters it. The final number has to come from the test split.
 - **Costs are list prices from third-party trackers.** GPT's token counts are measured; Gemini's
   $5.40 assumes the same token counts as GPT, and a different figure changes the saving directly.
 - **The speed limit matters.** Without it, the router sends everything to Gemma first at "$0" and
-  reports 87.7% at $0.20. That's an artifact: Gemma takes about 105 s, has no paid tier we could
+  reports 87.8% at $0.20. That's an artifact: Gemma takes about 110 s, has no paid tier we could
   price, and is often overloaded, so that saving wouldn't exist at real volume.
-- **Differences are small.** One receipt is 1.4 points here.
+- **Differences are small.** One receipt is about 1 point here.
 
 **Checked for real through Redis and a worker:**
 

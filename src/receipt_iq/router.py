@@ -28,7 +28,8 @@ from receipt_iq.evaluation import ExtractionError, Extractor, TemporaryError
 from receipt_iq.schema import Receipt
 from receipt_iq.validation import validate
 
-DEFAULT_TARGET = 0.75
+# Chosen on the validation split: at 75% GPT doesn't qualify, so routing saves almost nothing.
+DEFAULT_TARGET = 0.70
 # Someone is waiting on an upload, so a free model taking minutes doesn't qualify.
 DEFAULT_MAX_SECONDS = 60.0
 TOLERANCE = Decimal(100)  # IDR, as in scripts/evaluate.py
