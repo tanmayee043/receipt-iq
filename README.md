@@ -250,7 +250,7 @@ quota, and neither does `gpt-4o-mini` in the allowed region, so it runs `gpt-5-m
 | Validator catch rate | 42.1% | 25.0% | 63.2% | 71.1% | 37.0% |
 | Median latency | 23.0 s | 10.4 s | 110.5 s | 9.0 s | 8.3 s |
 
-These are validation scores, used for tuning. Final scores will come from the test split.
+These are validation scores, used for tuning. The final scores are in the next section.
 
 What the numbers show:
 
@@ -267,6 +267,28 @@ What the numbers show:
   the 6 wrong Gemini receipts the validator missed had a wrong amount: they differed in item names,
   a blank subtotal or extra 0-priced lines, which arithmetic can't see. Azure's "8.000" bug is the opposite warning: wrong amounts that are
   consistent with each other pass too.
+
+### Final scores: test split
+
+Run once, after the prompt and the router target were locked on validation. 95 of the 100 test
+receipts can be scored; the other 5 labels have no printed total.
+
+| Metric | Local, prompt v2 | Gemini 3.5 Flash | Gemma 4 31B | Azure | GPT-5 mini |
+|---|---|---|---|---|---|
+| Total correct | 30.5% | 100.0% | 90.5% | 88.4% | 93.7% |
+| Line items: F1 | 26.8% | 96.1% | 88.5% | 90.9% | 94.2% |
+| Fully correct receipts | 4 of 95 | **81 of 95** | 76 of 95 | 55 of 95 | 71 of 95 |
+| Failed | 2 | 0 | 9 | 4 | 0 |
+| Validator catch rate | 41.8% | 14.3% | 57.9% | 72.5% | 41.7% |
+| Median latency | 21.8 s | 9.3 s | 70.6 s | 9.0 s | 9.9 s |
+
+- **Same order as validation**, and each provider within a few points of its validation score
+  (Gemini 83.7% → 85.3%, Gemma 80.6% → 80.0%, GPT 72.4% → 74.7%), so the prompt wasn't fitted to
+  the validation receipts.
+- **Gemini's low catch rate** is the blind spot above: its mistakes are mostly names and blank
+  fields, which arithmetic can't see.
+- **One caveat:** the validator's rules were first fixed against the test labels (see "Checking the
+  checker"), so its catch rates here may read slightly better than on new receipts.
 
 ## Task queue (`tasks.py`)
 
@@ -360,14 +382,33 @@ but saves nothing. So 75% was a setting tuned on a partial run, and it didn't su
 
 Read those numbers with care:
 
-- **Not final.** The router's accuracy figures and this target come from these same receipts, so
-  this flatters it. The final number has to come from the test split.
+- **Tuned on these receipts.** The router's accuracy figures and this target come from these same
+  receipts, which flatters it. The test split below is the honest number.
 - **Costs are list prices from third-party trackers.** GPT's token counts are measured; Gemini's
   $5.40 assumes the same token counts as GPT, and a different figure changes the saving directly.
 - **The speed limit matters.** Without it, the router sends everything to Gemma first at "$0" and
   reports 87.8% at $0.20. That's an artifact: Gemma takes about 110 s, has no paid tier we could
   price, and is often overloaded, so that saving wouldn't exist at real volume.
 - **Differences are small.** One receipt is about 1 point here.
+
+**Final check: the same router on the 95 test receipts.** Its accuracy figures still come from
+validation (`leaderboard.json`), so the test receipts played no part in its choices:
+
+| Policy | Fully correct | Line-item F1 | $ per 1,000 | Sent to review | Mean time |
+|---|---|---|---|---|---|
+| Always Gemini (most accurate) | 85.3% | 96.1% | 5.40 | 3.2% | 19.1 s |
+| Always GPT | 74.7% | 94.2% | 1.11 | 12.6% | 10.7 s |
+| Always Azure | 57.9% | 90.9% | 9.58 | 30.5% | 8.9 s |
+| Router, 70% target, 1 answer | 74.7% | 94.2% | 1.11 | 12.6% | 10.7 s |
+| **Router, 70% target, second opinion (default)** | 82.1% | 95.3% | 1.79 | 3.2% | 14.0 s |
+
+The validation result holds on unseen receipts: the default router costs **67% less** than always
+using Gemini, sends the same share to review, and loses 3 of 95 receipts (3.2 points), against 5 of
+98 on validation. The second opinion is what earns that: without it, 1 receipt in 8 goes to review.
+
+```bash
+python scripts/simulate_routing.py data/cord/test.parquet   # no provider calls
+```
 
 **Checked for real through Redis and a worker:**
 
