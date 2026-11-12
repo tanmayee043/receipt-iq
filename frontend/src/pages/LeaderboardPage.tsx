@@ -33,16 +33,23 @@ function isEstimate(provider: Provider): boolean {
   return provider.cost_note.toLowerCase().startsWith("estimate");
 }
 
-function ProvisionalNote({ data }: { data: Leaderboard }) {
+function ScoresNote({ data }: { data: Leaderboard }) {
   return (
     <p className="mb-6 flex gap-2 rounded-control border border-border bg-surface px-4 py-3">
       <span className="mt-0.5 text-warn">
         <InfoIcon />
       </span>
       <span>
-        <strong className="font-semibold">Provisional.</strong> These are {data.split} scores on the{" "}
-        {data.receipts} receipts every provider has answered. Final scores will come from the
-        held-out test split.
+        <strong className="font-semibold">Validation scores.</strong> These are {data.split} scores
+        on the {data.receipts} receipts every provider has answered, and they set the router's
+        order. On unseen test receipts the ranking held:{" "}
+        <a
+          href="https://github.com/tanmayee043/receipt-iq#results"
+          className="underline hover:text-text"
+        >
+          final results
+        </a>
+        .
       </span>
     </p>
   );
@@ -216,7 +223,7 @@ export function LeaderboardPage() {
       )}
       {data && (
         <>
-          <ProvisionalNote data={data} />
+          <ScoresNote data={data} />
           {/* minmax(0, ...) so the wide table scrolls inside its box, not the whole page. */}
           <div className="grid grid-cols-[minmax(0,1fr)] gap-10">
             <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
