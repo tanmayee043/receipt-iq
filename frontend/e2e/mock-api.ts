@@ -272,6 +272,8 @@ export const DEMO_SAMPLES = [
 
 interface Mock {
   demoSamples?: (route: Route) => Promise<void>;
+  // The hosted demo, which has no owner pages.
+  demoOnly?: boolean;
   loggedIn?: boolean;
   reviewQueue?: (route: Route) => Promise<void>;
   leaderboard?: (route: Route) => Promise<void>;
@@ -290,7 +292,9 @@ export async function mockApi(page: Page, mock: Mock = {}) {
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (path === "/api/session") return json(route, { logged_in: loggedIn });
+    if (path === "/api/session") {
+      return json(route, { logged_in: loggedIn, demo_only: mock.demoOnly ?? false });
+    }
     if (path === "/api/login") {
       const { password } = request.postDataJSON() as { password: string };
       if (password !== "right-password") {

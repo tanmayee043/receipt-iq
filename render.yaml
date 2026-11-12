@@ -1,0 +1,10 @@
+# Render Blueprint for the hosted demo. It builds the Dockerfile and redeploys on every
+# merge to main. Free plan: it sleeps after 15 idle minutes, so a first visit can take a minute.
+services:
+  - type: web
+    name: receipt-iq
+    runtime: docker
+    plan: free
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /healthz

@@ -64,7 +64,7 @@ from receipt_iq.providers.azure_openai import AzureOpenAI
 from receipt_iq.providers.gemini import Gemini
 from receipt_iq.providers.local import TesseractOllama
 from receipt_iq.review import issue_json, save_result
-from receipt_iq.router import Routed, Router, load_routes
+from receipt_iq.router import LEADERBOARD, Routed, Router, load_routes
 from receipt_iq.settings import get_settings
 from receipt_iq.validation import validate
 
@@ -73,7 +73,6 @@ logger = logging.getLogger(__name__)
 REDIS_URL = get_settings().redis_url
 TOLERANCE = Decimal(100)  # IDR, as in scripts/evaluate.py
 AUTO = "auto"  # let the router choose the provider
-LEADERBOARD = Path("leaderboard.json")
 MAX_RETRIES = 5
 RETRY_BASE_SECONDS = 60  # 1, 2, 4, 8, then 16 minutes
 

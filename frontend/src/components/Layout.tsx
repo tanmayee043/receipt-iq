@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 
 import { api } from "../api";
-import { SESSION_KEY, useLoggedIn } from "../session";
+import { SESSION_KEY, useDemoOnly, useLoggedIn } from "../session";
 import { useTheme } from "../theme";
 import { MoonIcon, SunIcon } from "./Icons";
 
@@ -34,6 +34,7 @@ function ThemeToggle() {
 
 function AccountControl() {
   const loggedIn = useLoggedIn();
+  const demoOnly = useDemoOnly();
   const location = useLocation();
   const queryClient = useQueryClient();
   const logout = useMutation({
@@ -57,7 +58,7 @@ function AccountControl() {
     );
   }
   // Hidden until the session is known, so it doesn't flash "Log in" at someone logged in.
-  if (loggedIn === undefined || location.pathname === "/login") return null;
+  if (loggedIn === undefined || demoOnly || location.pathname === "/login") return null;
   return (
     <Link to="/login" state={{ from: location.pathname }} className={`${look} no-underline`}>
       Log in

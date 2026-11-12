@@ -33,6 +33,7 @@ DEFAULT_TARGET = 0.70
 # Someone is waiting on an upload, so a free model taking minutes doesn't qualify.
 DEFAULT_MAX_SECONDS = 60.0
 TOLERANCE = Decimal(100)  # IDR, as in scripts/evaluate.py
+LEADERBOARD = Path("leaderboard.json")  # scripts/build_leaderboard.py writes it
 
 
 @dataclass(frozen=True)

@@ -165,7 +165,7 @@ def test_upload_without_login_never_reaches_a_provider(
 def test_wrong_password_is_refused(anonymous: TestClient) -> None:
     response = anonymous.post("/api/login", json={"password": "nope"})
     assert (response.status_code, error_code(response)) == (401, "wrong_password")
-    assert anonymous.get("/api/session").json() == {"logged_in": False}
+    assert anonymous.get("/api/session").json() == {"logged_in": False, "demo_only": False}
 
 
 def test_login_cookie_cant_be_read_by_scripts_or_sent_from_other_sites(
@@ -179,7 +179,7 @@ def test_login_cookie_cant_be_read_by_scripts_or_sent_from_other_sites(
 
 def test_logout_ends_the_session_for_real(client: TestClient) -> None:
     token = client.cookies["receipt_iq_session"]
-    assert client.get("/api/session").json() == {"logged_in": True}
+    assert client.get("/api/session").json() == {"logged_in": True, "demo_only": False}
     assert client.post("/api/logout").status_code == 200
 
     # The old cookie stops working too, which a signed cookie couldn't do.

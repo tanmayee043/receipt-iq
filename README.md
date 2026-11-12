@@ -648,6 +648,34 @@ npm run build      # FastAPI serves this from then on
 npm run test:e2e   # needs the build
 ```
 
+## Hosted demo (`web.py`, `Dockerfile`, `render.yaml`)
+
+The public copy runs only the pages anyone may see: the demo, its validator check and the
+leaderboard. It has no login, database, Redis or provider keys, so no visitor can spend a quota,
+and there's nothing secret to configure.
+
+```
+browser ──HTTPS──► Render proxy ──► uvicorn receipt_iq.web:create_demo_app
+                                      ├─ /api/leaderboard, /api/demo/*   (rate limited in memory)
+                                      ├─ /healthz                         (Render's health check)
+                                      └─ the built screens
+```
+
+- **One codebase, two apps.** `web.py` holds the public pages and `api.py` adds the owner's
+  pages on top, so the demo can't drift from what runs locally. `web.py` never imports the task
+  queue, and a test starts it with no settings at all to prove it.
+- **Rate limit without Redis:** the same one-minute windows, counted in memory. Fine for one
+  process; the counts reset on a restart, which costs nothing when there's no quota behind it.
+- **No login on the public copy.** `/api/session` answers `demo_only`, so the screens explain
+  that uploading and reviewing run on the owner's copy instead of showing a login that can't work.
+- **Free plan:** it sleeps after 15 idle minutes, so the first visit after that takes about a
+  minute. Every merge to `main` redeploys it.
+
+```bash
+docker build -t receipt-iq-demo .
+docker run --rm -p 8000:8000 receipt-iq-demo   # http://localhost:8000
+```
+
 ## Run it
 
 ```bash

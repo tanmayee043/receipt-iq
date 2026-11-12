@@ -141,7 +141,7 @@ function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export const api = {
-  session: () => request<{ logged_in: boolean }>("/session"),
+  session: () => request<{ logged_in: boolean; demo_only?: boolean }>("/session"),
   login: (password: string) => post<{ logged_in: boolean }>("/login", { password }),
   logout: () => post<{ logged_in: boolean }>("/logout"),
   leaderboard: () => request<Leaderboard>("/leaderboard"),

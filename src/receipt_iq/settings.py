@@ -26,7 +26,20 @@ class Settings(BaseSettings):
     celery_visibility_timeout: int = 3600
 
 
-class ApiSettings(Settings):
+class SiteSettings(BaseSettings):
+    """What the public pages need. The hosted demo needs only this."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Requests per minute, per IP.
+    rate_limit_general: int = 120
+    # The built screens (npm run build). Served if present; the API works without them.
+    frontend_dist: Path = Path("frontend/dist")
+    # The sample receipts visitors can try (scripts/build_demo.py).
+    demo_dir: Path = Path("demo")
+
+
+class ApiSettings(Settings, SiteSettings):
     """What only the API needs, so a worker doesn't have to know the owner's password hash."""
 
     # From scripts/hash_password.py.
@@ -37,13 +50,8 @@ class ApiSettings(Settings):
     # Keeps the API's sessions and counters apart from Celery's Redis databases, 0 and 1.
     api_redis_db: int = 2
     # Requests per minute, per IP.
-    rate_limit_general: int = 120
     rate_limit_upload: int = 10
     rate_limit_login: int = 5
-    # The built screens (npm run build). Served if present; the API works without them.
-    frontend_dist: Path = Path("frontend/dist")
-    # The sample receipts visitors can try (scripts/build_demo.py).
-    demo_dir: Path = Path("demo")
 
 
 def get_settings() -> Settings:
