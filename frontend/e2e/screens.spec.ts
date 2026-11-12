@@ -21,7 +21,7 @@ test.describe("leaderboard", () => {
     await expect(page).toHaveTitle("Model leaderboard · Receipt IQ");
     await expect(page.getByRole("heading", { name: "Model leaderboard", level: 1 })).toBeVisible();
     await expect(page.getByText("The router tries GPT-5 mini first")).toBeVisible();
-    await expect(page.getByText("Provisional.")).toBeVisible();
+    await expect(page.getByText("Validation scores.")).toBeVisible();
     await expect(page.getByText("73 receipts")).toBeVisible();
     await expect(page.getByText("Last resort: slower than 60 s")).toBeVisible();
     await expect(page.getByText("est.")).toBeVisible();
@@ -77,7 +77,7 @@ test.describe("leaderboard", () => {
     await expect(alert).toContainText("Too many requests. Try again in 30 s.");
     healthy = true;
     await page.getByRole("button", { name: "Try again" }).click();
-    await expect(page.getByText("Provisional.")).toBeVisible();
+    await expect(page.getByText("Validation scores.")).toBeVisible();
   });
 });
 
