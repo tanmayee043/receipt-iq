@@ -23,14 +23,12 @@ import binascii
 import hashlib
 import json
 import logging
-from collections.abc import Mapping
 from datetime import datetime
 from io import BytesIO
 from typing import Annotated, Any, NoReturn
 
 from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from kombu.exceptions import OperationalError as BrokerError
 from PIL import Image
@@ -40,14 +38,9 @@ from redis.exceptions import RedisError
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from starlette.datastructures import UploadFile
-from starlette.exceptions import HTTPException
-from starlette.responses import Response as StarletteResponse
-from starlette.staticfiles import StaticFiles
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from receipt_iq.db import FAILED, Document, session_scope
 from receipt_iq.review import (
-    TOLERANCE,
     CorrectionRejected,
     Cursor,
     DocumentNotFound,
@@ -60,7 +53,6 @@ from receipt_iq.review import (
     routing_log,
     save_result,
 )
-from receipt_iq.router import DEFAULT_MAX_SECONDS, DEFAULT_TARGET, load_routes, qualifies, rank
 from receipt_iq.schema import Receipt
 from receipt_iq.security import (
     create_session,
@@ -70,8 +62,21 @@ from receipt_iq.security import (
     verify_password,
 )
 from receipt_iq.settings import ApiSettings
-from receipt_iq.tasks import AUTO, LEADERBOARD, submit, upload_path
-from receipt_iq.validation import validate
+from receipt_iq.tasks import AUTO, submit, upload_path
+from receipt_iq.web import (
+    ApiError,
+    AttemptOut,
+    BodyLimit,
+    HealthOut,
+    IssueOut,
+    Screens,
+    SessionOut,
+    add_error_handlers,
+    error_response,
+    live,
+    showcase,
+    too_many_requests,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,43 +89,6 @@ MAX_PAGE_SIZE = 100
 
 Digest = Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")]
 PageSize = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)]
-
-
-class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str, details: Any = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.code = code
-        self.message = message
-        self.details = details
-
-
-def _error_response(
-    status: int,
-    code: str,
-    message: str,
-    details: Any = None,
-    headers: Mapping[str, str] | None = None,
-) -> JSONResponse:
-    error = {"code": code, "message": message}
-    if details is not None:
-        error["details"] = details
-    return JSONResponse({"error": error}, status_code=status, headers=headers)
-
-
-class IssueOut(BaseModel):
-    code: str
-    message: str
-    expected: str
-    actual: str
-    location: str
-
-
-class AttemptOut(BaseModel):
-    provider: str
-    outcome: str
-    reason: str
-    seconds: float
 
 
 class DocumentOut(BaseModel):
@@ -154,10 +122,6 @@ class LoginIn(BaseModel):
     password: str = Field(max_length=1024)
 
 
-class SessionOut(BaseModel):
-    logged_in: bool
-
-
 class CorrectionIn(BaseModel):
     receipt: Receipt
     # True to save a correction that doesn't add up, for a receipt that's misprinted.
@@ -166,58 +130,6 @@ class CorrectionIn(BaseModel):
 
 class DismissalIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
-
-
-class ProviderOut(BaseModel):
-    provider: str
-    local: bool
-    fully_correct: float
-    total_correct: float
-    item_f1: float
-    catch_rate: float | None
-    false_alarm_rate: float | None
-    failure_rate: float
-    median_seconds: float
-    cost_per_1000: float
-    cost_note: str
-    # Reaches the accuracy target and speed limit, so the router doesn't keep it as a last resort.
-    meets_policy: bool
-
-
-class LeaderboardOut(BaseModel):
-    split: str
-    receipts: int
-    accuracy_target: float
-    max_seconds: float
-    # The order the router tries providers in.
-    routing_order: list[str]
-    providers: list[ProviderOut]
-
-
-class DemoSampleOut(BaseModel):
-    id: str
-    title: str
-    note: str
-    status: str
-    provider: str
-    receipt: Receipt
-    issues: list[IssueOut]
-    attempts: list[AttemptOut]
-    seconds: float
-
-
-class DemoCheckIn(BaseModel):
-    receipt: Receipt
-
-
-class DemoCheckOut(BaseModel):
-    passed: bool
-    issues: list[str]
-
-
-class HealthOut(BaseModel):
-    status: str
-    checks: dict[str, bool] = {}
 
 
 def _settings(request: Request) -> ApiSettings:
@@ -235,8 +147,7 @@ def _rate_limited(bucket: str) -> Any:
         limit: int = getattr(_settings(request), f"rate_limit_{bucket}")
         client = request.client.host if request.client else "unknown"
         wait = seconds_until_allowed(_redis(request), bucket, client, limit)
-        if wait is not None:
-            raise ApiError(429, "rate_limited", f"Too many requests. Try again in {wait} s.", wait)
+        too_many_requests(wait)
 
     return Depends(check)
 
@@ -453,67 +364,7 @@ def read_session(request: Request) -> SessionOut:
     return SessionOut(logged_in=session_is_valid(_redis(request), token))
 
 
-@public.get("/leaderboard", response_model=LeaderboardOut)
-def read_leaderboard() -> Any:
-    leaderboard = json.loads(LEADERBOARD.read_text(encoding="utf-8"))
-    routes = load_routes(LEADERBOARD)
-    meeting = {r.provider for r in routes if qualifies(r, DEFAULT_TARGET, DEFAULT_MAX_SECONDS)}
-    for provider in leaderboard["providers"]:
-        provider["meets_policy"] = provider["provider"] in meeting
-    order = rank(routes, DEFAULT_TARGET, max_seconds=DEFAULT_MAX_SECONDS)
-    return {
-        **leaderboard,
-        "accuracy_target": DEFAULT_TARGET,
-        "max_seconds": DEFAULT_MAX_SECONDS,
-        "routing_order": [route.provider for route in order],
-    }
-
-
-def _demo_samples(request: Request) -> list[dict[str, Any]]:
-    path = _settings(request).demo_dir / "samples.json"
-    if not path.exists():
-        return []
-    samples: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))
-    return samples
-
-
-@public.get("/demo/samples", response_model=list[DemoSampleOut])
-def read_demo_samples(request: Request) -> Any:
-    """Saved answers to sample receipts, so a visitor spends no provider quota."""
-    return _demo_samples(request)
-
-
-@public.get(
-    "/demo/samples/{sample_id}/image",
-    response_class=Response,
-    responses={200: {"content": {"image/jpeg": {}}}},
-)
-def read_demo_image(sample_id: str, request: Request) -> Response:
-    # Looked up among the samples, so the address can't reach any other file.
-    if not any(sample["id"] == sample_id for sample in _demo_samples(request)):
-        raise DocumentNotFound(sample_id)
-    path = _settings(request).demo_dir / "images" / f"{sample_id}.jpg"
-    return Response(
-        path.read_bytes(),
-        media_type="image/jpeg",
-        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=3600"},
-    )
-
-
-@public.post("/demo/check", response_model=DemoCheckOut)
-def check_demo_receipt(body: DemoCheckIn) -> DemoCheckOut:
-    """The real validator on a visitor's edit. Nothing is saved, and no provider is called."""
-    checked = validate(body.receipt, TOLERANCE)
-    return DemoCheckOut(passed=checked.passed, issues=[i.message for i in checked.issues])
-
-
-# Not rate limited: monitoring has to get through, and these must answer when Redis is down.
-@health.get("/healthz", response_model=HealthOut)
-def healthz() -> HealthOut:
-    """The process is running."""
-    return HealthOut(status="ok")
-
-
+# Not rate limited: monitoring has to get through, and it must answer when Redis is down.
 @health.get("/readyz", response_model=HealthOut, responses={503: {"model": HealthOut}})
 def readyz(request: Request, response: Response) -> HealthOut:
     """Postgres and Redis can be reached, so requests can be served."""
@@ -539,120 +390,23 @@ def _redis_is_up(redis: Redis) -> bool:
         return False
 
 
-class BodyLimit:
-    """Refuse an oversized request before it fills the disk, even with no Content-Length."""
-
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
-        self.app = app
-        self.max_bytes = max_bytes
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        length = dict(scope["headers"]).get(b"content-length", b"")
-        if length.isdigit() and int(length) > self.max_bytes:
-            response = _error_response(413, "too_large", "That request is too large.")
-            await response(scope, receive, send)
-            return
-
-        seen = 0
-
-        async def counted() -> Message:
-            nonlocal seen
-            message = await receive()
-            seen += len(message.get("body", b""))
-            if seen > self.max_bytes:
-                # An HTTPException, as FastAPI turns anything else raised while reading the
-                # body into a 400.
-                raise HTTPException(413, "That request is too large.")
-            return message
-
-        await self.app(scope, counted, send)
-
-
-class Screens(StaticFiles):
-    """The built screens. Any page address gets index.html, and the app shows the right page.
-
-    A missing file (one with an extension) or API address stays a 404, so a broken script
-    link or a mistyped API call doesn't get a web page back.
-    """
-
-    HEADERS = {
-        "X-Content-Type-Options": "nosniff",
-        "X-Frame-Options": "DENY",
-        "Content-Security-Policy": (
-            "default-src 'self'; script-src 'self'; "
-            # Inline styles because the chart library positions its elements with them.
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src https://fonts.gstatic.com; img-src 'self' data:; "
-            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
-        ),
-    }
-
-    async def get_response(self, path: str, scope: Scope) -> StarletteResponse:
-        # The address as requested: `path` has had any ".." resolved, and uses backslashes
-        # on Windows, so it can hide that an address was meant for the API.
-        address = scope["path"]
-        if address == "/api" or address.startswith("/api/"):
-            raise HTTPException(404)
-        try:
-            response = await super().get_response(path, scope)
-        except HTTPException as failure:
-            is_file = "." in address.rsplit("/", 1)[-1]
-            if failure.status_code != 404 or is_file:
-                raise
-            response = await super().get_response("index.html", scope)
-        response.headers.update(self.HEADERS)
-        return response
-
-
 def _add_error_handlers(app: FastAPI) -> None:
-    @app.exception_handler(ApiError)
-    def api_error(request: Request, error: ApiError) -> JSONResponse:
-        headers = {"Retry-After": str(error.details)} if error.status == 429 else None
-        details = None if error.status == 429 else error.details
-        return _error_response(error.status, error.code, error.message, details, headers)
-
-    @app.exception_handler(DocumentNotFound)
-    def not_found(request: Request, error: DocumentNotFound) -> JSONResponse:
-        return _error_response(404, "not_found", "There's no receipt with that hash.")
+    add_error_handlers(app)
 
     @app.exception_handler(NotReviewable)
     def not_reviewable(request: Request, error: NotReviewable) -> JSONResponse:
-        return _error_response(409, "not_reviewable", str(error))
+        return error_response(409, "not_reviewable", str(error))
 
     @app.exception_handler(CorrectionRejected)
     def rejected(request: Request, error: CorrectionRejected) -> JSONResponse:
         message = "That correction doesn't add up. Confirm it if the receipt itself is misprinted."
-        return _error_response(422, "correction_rejected", message, {"issues": error.issues})
-
-    @app.exception_handler(RequestValidationError)
-    def invalid(request: Request, error: RequestValidationError) -> JSONResponse:
-        # Without the submitted values, so a password is never echoed back.
-        details = [
-            {"location": item["loc"], "message": item["msg"], "type": item["type"]}
-            for item in error.errors()
-        ]
-        return _error_response(422, "validation_error", "That request isn't valid.", details)
-
-    @app.exception_handler(HTTPException)
-    def http_error(request: Request, error: HTTPException) -> JSONResponse:
-        return _error_response(
-            error.status_code, f"http_{error.status_code}", str(error.detail), None, error.headers
-        )
+        return error_response(422, "correction_rejected", message, {"issues": error.issues})
 
     @app.exception_handler(OperationalError)
     @app.exception_handler(RedisError)
     def service_down(request: Request, error: Exception) -> JSONResponse:
         logger.error("a service is unreachable: %s", type(error).__name__)
-        return _error_response(503, "unavailable", "Something's temporarily down. Try again soon.")
-
-    @app.exception_handler(Exception)
-    def unexpected(request: Request, error: Exception) -> JSONResponse:
-        logger.error("unhandled error", exc_info=error)
-        return _error_response(500, "internal_error", "Something went wrong on our side.")
+        return error_response(503, "unavailable", "Something's temporarily down. Try again soon.")
 
 
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
@@ -675,7 +429,9 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     _add_error_handlers(app)
     app.include_router(protected)
     app.include_router(public)
+    app.include_router(showcase, dependencies=[_rate_limited("general")])
     app.include_router(health)
+    app.include_router(live)
     # Last, so every route above wins.
     if settings.frontend_dist.is_dir():
         app.mount("/", Screens(directory=settings.frontend_dist, html=True), name="screens")

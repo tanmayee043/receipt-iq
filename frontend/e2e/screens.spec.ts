@@ -102,6 +102,18 @@ test.describe("routing log", () => {
     await expect(page.getByRole("button", { name: /Needs review/ })).toHaveCount(0);
   });
 
+  test("the hosted demo offers no login, and says why", async ({ page }) => {
+    await mockApi(page, { demoOnly: true });
+    await page.goto("/leaderboard");
+    await expect(page.getByRole("heading", { name: "Model leaderboard" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Log in" })).toHaveCount(0);
+    for (const address of ["/routing-log", "/login"]) {
+      await page.goto(address);
+      await expect(page.getByRole("heading", { name: "Not on this public copy" })).toBeVisible();
+      await expect(page.getByLabel("Owner password")).toHaveCount(0);
+    }
+  });
+
   test("the login page goes back where you came from", async ({ page }) => {
     await mockApi(page);
     await page.goto("/leaderboard");

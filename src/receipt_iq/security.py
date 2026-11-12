@@ -1,4 +1,4 @@
-"""Login sessions and rate limits, both kept in Redis.
+"""Login sessions and rate limits, kept in Redis (or, for the hosted demo, in memory).
 
 A session is a random token. Only its hash is stored, so reading Redis doesn't give anyone
 a usable cookie, and deleting the key logs out for real, which a signed cookie can't do.
@@ -9,7 +9,9 @@ edge can reach twice the limit, which is fine for protecting a free quota.
 
 import hashlib
 import secrets
+import threading
 import time
+from collections import Counter
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
@@ -61,3 +63,30 @@ def seconds_until_allowed(redis: Redis, bucket: str, client: str, limit: int) ->
     if count <= limit:
         return None
     return int(WINDOW_SECONDS - now % WINDOW_SECONDS) + 1
+
+
+class LocalRateLimit:
+    """The same fixed windows, counted in this process, for the hosted demo with no Redis.
+
+    Only the current window is kept, so memory is bounded by one minute's visitors, and a
+    restart resets the counts, which is fine for a demo that spends no quota.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.window = -1
+        self.counts: Counter[str] = Counter()
+        self.lock = threading.Lock()  # requests are handled on several threads
+
+    def seconds_until_allowed(self, client: str) -> int | None:
+        """Count this request. Returns how long to wait if it's over the limit, else None."""
+        now = time.time()
+        window = int(now // WINDOW_SECONDS)
+        with self.lock:
+            if window != self.window:
+                self.window, self.counts = window, Counter()
+            self.counts[client] += 1
+            count = self.counts[client]
+        if count <= self.limit:
+            return None
+        return int(WINDOW_SECONDS - now % WINDOW_SECONDS) + 1
