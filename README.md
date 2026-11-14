@@ -7,6 +7,8 @@ Turn receipt photos into checked, itemized data, and know which AI provider to t
 
 **Live demo:** [receipt-iq-m7bq.onrender.com](https://receipt-iq-m7bq.onrender.com)
 
+![A 20-second tour: a receipt, a wrong total refused by the check, a bill split, and the leaderboard](docs/images/demo.gif)
+
 ## Why this exists
 
 Expense tools, accounts-payable teams and bill-splitting apps all turn paper receipts into data.
